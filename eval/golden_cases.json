@@ -1,0 +1,167 @@
+[
+  {
+    "id": "langchain_pr_slowdown_2025_04_30",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-24",
+    "window_end": "2025-04-30",
+    "expected_evidence_urls": [
+      "https://github.com/langchain-ai/langchain/pull/31069",
+      "https://github.com/langchain-ai/langchain/pull/31060"
+    ],
+    "accepted_explanation": "Repository restructuring (langchain-community moving to a separate repo) combined with the release of langchain-core v0.3.56 increased review complexity and slowed PR merges during this window.",
+    "expected_confidences": ["medium", "high"],
+    "z_score": 7.74,
+    "baseline_value": 6.0,
+    "observed_value": 72.0,
+    "limitation_notes": "Inline code review comments (separate from discussion comments) were not fetched. Reviewer availability data not in the dataset."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_04_05",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-03-30",
+    "window_end": "2025-04-05",
+    "expected_evidence_urls": [
+      "https://github.com/langchain-ai/langchain/pull/29334",
+      "https://github.com/langchain-ai/langchain/pull/29335",
+      "https://github.com/langchain-ai/langchain/pull/29381"
+    ],
+    "accepted_explanation": "A batch of 'Add ruff rules' PRs opened in January 2025 were merged together in a coordinated backlog cleanup event (March 31 – April 4). The median was elevated by these long-lived PRs merging in a cluster.",
+    "expected_confidences": ["medium", "high"],
+    "z_score": 6.22,
+    "baseline_value": 32.0,
+    "observed_value": 233.0,
+    "limitation_notes": "Codex confirmed this is a backlog-cleanup artifact, not genuine review slowdown. The median is skewed by coordinated old-PR merges."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_03_29",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-03-23",
+    "window_end": "2025-03-29",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Mix of stale PRs being merged alongside normal activity. Median elevated by a small number of long-lived PRs merging during a moderate-volume week.",
+    "expected_confidences": ["low", "medium"],
+    "z_score": 4.27,
+    "baseline_value": 18.0,
+    "observed_value": 110.0,
+    "limitation_notes": "Expected evidence URLs not pre-identified for this window — citation_coverage will not be scored."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_04_12",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-06",
+    "window_end": "2025-04-12",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Moderate anomaly. Weaker signal than adjacent windows — likely a combination of normal variation and a few older PRs merging.",
+    "expected_confidences": ["low", "medium"],
+    "z_score": 5.1,
+    "baseline_value": 2.1,
+    "observed_value": 17.2,
+    "limitation_notes": "Expected evidence URLs not pre-identified."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_03_22",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-03-16",
+    "window_end": "2025-03-22",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Early signal of the stale-PR backlog pattern. Median elevated by a small number of long-lived PRs. Weaker signal than the April windows.",
+    "expected_confidences": ["low", "medium"],
+    "z_score": 3.4,
+    "baseline_value": 1.4,
+    "observed_value": 7.6,
+    "limitation_notes": "Expected evidence URLs not pre-identified."
+  },
+  {
+    "id": "dbt_pr_slowdown_2025_04_12",
+    "repo": "dbt-labs/dbt-core",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-06",
+    "window_end": "2025-04-12",
+    "expected_evidence_urls": [
+      "https://github.com/dbt-labs/dbt-core/pull/9839"
+    ],
+    "accepted_explanation": "A single PR (#9839) that had been open for approximately 373 days was merged during a quiet week (only 3 PRs merged total). This one stale PR drove ~99.7% of the average merge time. Not a genuine health signal — a cleanup artifact.",
+    "expected_confidences": ["high", "medium"],
+    "z_score": 46.5,
+    "baseline_value": 43.1,
+    "observed_value": 2997.0,
+    "limitation_notes": "This is a known data artifact. The correct detector metric (median) would suppress this. Agent should identify the single outlier PR as the root cause."
+  },
+  {
+    "id": "dbt_pr_slowdown_2025_03_29",
+    "repo": "dbt-labs/dbt-core",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-03-23",
+    "window_end": "2025-03-29",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Similar stale-PR artifact pattern. One or two long-lived PRs merged during a low-volume week. Low activity repo makes these signals noisy.",
+    "expected_confidences": ["medium", "low"],
+    "z_score": 11.5,
+    "baseline_value": 44.8,
+    "observed_value": 800.0,
+    "limitation_notes": "Expected evidence URLs not pre-identified."
+  },
+  {
+    "id": "vllm_pr_slowdown_2025_04_19",
+    "repo": "vllm-project/vllm",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-13",
+    "window_end": "2025-04-19",
+    "expected_evidence_urls": [
+      "https://github.com/vllm-project/vllm/pull/10546"
+    ],
+    "accepted_explanation": "A batch of long-lived PRs (some open since November 2024) were merged during this window alongside normal volume. The median was elevated but the typical PR was still merging within ~25 hours — this is a mixed backlog-clearing signal rather than a repo-wide slowdown.",
+    "expected_confidences": ["medium", "low"],
+    "z_score": 3.02,
+    "baseline_value": 78.0,
+    "observed_value": 188.0,
+    "limitation_notes": "Codex identified PR #10546 as the main outlier (3483h, open since Nov 2024). Typical PRs were healthy."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_03_22_mean",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-03-16",
+    "window_end": "2025-03-22",
+    "expected_evidence_urls": [
+      "https://github.com/langchain-ai/langchain/pull/28972"
+    ],
+    "accepted_explanation": "PR #28972 (open since Dec 30, 2024, merged Mar 17) was a major outlier in the mean-based metric. With median, this window shows a weaker signal. Demonstrates the importance of using median over mean for this metric.",
+    "expected_confidences": ["low", "medium"],
+    "z_score": 7.98,
+    "baseline_value": 11.0,
+    "observed_value": 75.5,
+    "limitation_notes": "This case uses the old mean-based metric for historical comparison. The median-based detector correctly scores this as z=3.4 (weaker signal)."
+  },
+  {
+    "id": "dbt_pr_slowdown_2025_04_12_median",
+    "repo": "dbt-labs/dbt-core",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-06",
+    "window_end": "2025-04-12",
+    "expected_evidence_urls": [
+      "https://github.com/dbt-labs/dbt-core/pull/9839"
+    ],
+    "accepted_explanation": "Duplicate of dbt_pr_slowdown_2025_04_12. Included to validate that the agent consistently identifies PR #9839 as the root cause across separate runs.",
+    "expected_confidences": ["high", "medium"],
+    "z_score": 46.5,
+    "baseline_value": 43.1,
+    "observed_value": 2997.0,
+    "limitation_notes": "Consistency check — same window as dbt_pr_slowdown_2025_04_12."
+  }
+]

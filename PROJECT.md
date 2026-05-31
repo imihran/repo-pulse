@@ -169,31 +169,24 @@ detect→investigate→explain loop *before* building orchestration.
 - **Anomaly types (3):** issue-open spike · PR merge-time slowdown · star/activity spike
 - **First milestone:** a few *excellent* cited reports + a 10-case eval benchmark.
 
-> **Working model:** learning-first. Mish writes the core logic; collaborator scaffolds
-> boilerplate, explains the *why*, reviews, and quizzes. Each slice ends only when Mish can
-> explain it back. Ingestion stays minimal; effort concentrates on the agent + eval/obs.
+> **Working model:** learning-first. Claude writes and narrates code, Mish watches and asks questions at each step. Codex is used for data exploration and insight generation (querying the DB, identifying anomaly patterns). Claude handles all development work. Each slice ends with a working, tested deliverable before moving on.
 
-| # | Slice | Core deliverable | Who writes core |
+| # | Slice | Core deliverable | Status |
 |---|---|---|---|
-| 0 | Repo + docs | This spec + README + .gitignore | ✅ done |
-| 1 | Minimal local stack | docker-compose: **Postgres + pgvector only** (no Airflow yet) | scaffold + explain |
-| 2 | Ingest + prove | Bounded GH Archive slice for the 3 repos → idempotent `events`; eyeball that explainable anomalies exist | pair |
-| 3 | Data model + metrics | Tables: `repos`, `events`, `repo_metrics_daily`, `github_artifacts`, `artifact_chunks`, `anomalies`, `investigation_reports`, `report_citations` | **Mish** |
-| 4 | Detector | Daily metrics; last-7d vs prior-28d; robust z-score/MAD or ratio + min event count | **Mish** |
-| 5 | Retrieval | Embed artifact chunks → pgvector; **vector-only OK for first loop** (BM25/hybrid later, documented as a limitation) | pair |
-| 6 | Investigator agent | LangGraph loop; tools `run_sql`/`search_artifacts`/`get_release_notes`; step + token caps; strict-JSON output | **Mish** (coached) |
-| 7 | Eval | 10 benchmark cases; citation coverage, groundedness, retrieval, routing, latency/cost; CI gate **after** it runs locally | pair |
-| 8 | Observability + guardrails | Langfuse traces/cost/latency; prompt-injection tests; read-only SQL; tool allowlist; cited-only validation | pair |
-| 9 | Public demo | **Feed of precomputed reports first**; report detail w/ citations + trace; optional on-demand investigation | **Mish** |
-| 10 | Harden / Airflow | Add **Airflow** for scheduled ingestion (DE credibility); add hybrid retrieval; expand golden set | pair |
-| 11 | Launch | Investigate the marquee repos; publish the first health reports | pair |
+| 0 | Repo + docs | This spec + README + .gitignore | ✅ |
+| 1 | Minimal local stack | docker-compose: Postgres 16 + pgvector 0.8.2; `infra/init.sql`; health check; `.env.example`; Makefile | ✅ |
+| 2 | Ingest + prove | `downloader.py` (raw → `data/raw/`) + `processor.py` (filter → Postgres); manifest; retry/backoff; null-byte sanitization. **60 days, 3 repos, 33,563 events.** | ✅ |
+| 3 | Data model | 8-table schema: `repos`, `events`, `repo_metrics_daily`, `github_artifacts`, `artifact_chunks`, `anomalies`, `investigation_reports`, `report_citations` | ✅ |
+| 4 | Detector | `detector.py`: daily metric aggregation (FILTER-based SQL); MAD z-score last-7d vs prior-28d; **median** merge time (not mean — Codex data audit confirmed mean is distorted by stale PRs); min_baseline guard | ✅ |
+| 5 | Retrieval | `enricher.py` (GitHub API → `github_artifacts`); `embedder.py` (chunk 2000-char/200-overlap → `text-embedding-3-small` → pgvector); HNSW index; vector-only (BM25 deferred, documented) | ✅ |
+| 6 | Investigator agent | `agent.py`: LangGraph ReAct loop; tools `run_sql` / `semantic_search` / `get_release_notes`; MAD budget 6 calls / 90s; `sanitize_messages` fix for budget-cutoff edge case; Pydantic `InvestigationReport` output contract | ✅ |
+| 7 | Eval | `eval/golden_cases.json` (10 cases); `eval/prepare.py` (enrich + embed all windows); `eval/evaluator.py` (citation coverage, budget, latency, confidence, optional LLM groundedness judge). **Baseline: 10/10 budget, 10/10 latency, 13.6s avg** | ✅ |
+| 8 | Observability + guardrails | Langfuse traces/cost/latency; prompt-injection tests; read-only SQL enforcement; tool allowlist; cited-outputs-only validation | 🔜 next |
+| 9 | Public demo | Feed of precomputed reports; report detail with citations + trace; optional on-demand investigation | 🔜 |
+| 10 | Harden / Airflow | Airflow for scheduled ingestion; hybrid (BM25) retrieval; expand golden set to 50 cases | 🔜 |
+| 11 | Launch | Investigate marquee repos; publish first health reports | 🔜 |
 
-**Slice-2 ingest bound (concrete):** download ~**60 days of hourly** GH Archive files,
-**stream-decompress line-by-line**, keep only events for the **3 MVP repos** (match by repo
-id/name), and idempotently upsert into `events`. Cache raw downloads under `data/` (gitignored)
-with a manifest of fetched hours. **Success criteria:** filtered events present for all 3 repos
-with visible day-to-day variation; **document the actual GB downloaded** (target: keep it
-modest by filtering during decompression, not after).
+**Slice-2 ingest approach (actual implementation):** two separate scripts — `downloader.py` downloads raw `.json.gz` files to `data/raw/` (100 MB each), `processor.py` filters and upserts from disk. Decoupling download from processing means network failures and processing failures are independent. A manifest at `data/manifest.json` tracks `downloaded` and `ingested` state per hour so re-running either script is always safe. `--delete-raw` flag reclaims disk after processing. **60 days × 24h = 1,464 files, ~146 GB raw, filtered to 33,563 events across 3 repos.**
 
 ## 13. Definition of done
 
@@ -226,11 +219,21 @@ modest by filtering during decompression, not after).
 - **2026-05-30** — (audit) MVP detector = daily metrics, last-7d vs prior-28d, robust z-score/MAD + min event count.
 - **2026-05-30** — (audit) v1 wedge = engineering teams evaluating OSS dependency health.
 - **2026-05-30** — (audit) Precomputed report feed is the primary demo; on-demand investigation may be slower.
+- **2026-05-31** — Split `ingest.py` into `downloader.py` + `processor.py`. Streaming-only approach caused repeated re-downloads on network failures. Two-phase design decouples network errors from processing errors; manifest independently tracks each phase.
+- **2026-05-31** — Changed `pr_avg_merge_hours` → `pr_median_merge_hours` (Codex data audit on real data confirmed mean is distorted by single stale PRs merging in quiet weeks; z=47 dbt anomaly was 99.7% driven by one PR open 373 days). Migration: `infra/04_rename_pr_metric.sql`. Detector uses `PERCENTILE_CONT(0.5)` instead of `AVG`.
+- **2026-05-31** — Agent model: `gpt-4o-mini` (default). Avg cost per investigation ~$0.01–0.02, avg latency 13.6s — well within the $0.25 / 90s budget.
+- **2026-05-31** — `sanitize_messages()` added to agent: when the tool-call budget cuts off the ReAct loop mid-turn, the last `AIMessage` may have unresolved `tool_calls` that OpenAI rejects in subsequent calls. Strip them before the structured-output synthesis call.
+- **2026-05-31** — Eval citation coverage gap (0.08 avg) is a known limitation: the agent cites SQL results by description (not URL), and expected evidence URLs point to PRs opened *before* the enrichment window. Fix: SQL citations should use structured identifiers; enricher should backfill PRs by merge date, not just by event window.
 
 ## 16. Open questions
 
-- Tune detector thresholds (z-score cutoff, min event count) against real data in slice 2.
-- Which LLM(s) to default to (per-investigation budget defaults set in §7; revisit the ceiling after real runs).
-- Embedding model choice + chunking strategy for issue/PR text.
-- Whether/when hybrid (BM25) retrieval is worth it vs. vector-only.
-- Hosting for the live demo (HF Spaces vs. small VM vs. Fly.io).
+**Resolved during build:**
+- ~~Tune detector thresholds~~ → z=3.5 default; Codex data audit confirmed this correctly suppresses stale-PR artifacts. Median metric is the key fix, not threshold tuning.
+- ~~Which LLM to default to~~ → `gpt-4o-mini`: avg $0.01–0.02/investigation, 13.6s avg. Within budget. Revisit if quality proves insufficient for Slice 9 demo.
+- ~~Embedding model choice~~ → `text-embedding-3-small` (1536 dims). Simple fixed-size chunking: 2000 chars / 200-char overlap.
+
+**Still open:**
+- **Citation coverage gap** — enricher needs to backfill PRs by merge date (not just by event window) so expected evidence URLs for stale-backlog cases are actually retrievable. Currently the agent scores 0% on cases where the key PR was opened 2 months before the anomaly window.
+- **Hybrid (BM25) retrieval** — vector-only misses exact keyword matches (PR numbers, error messages, library names). Add BM25/FTS as a second retrieval path and reciprocal rank fusion. Deferred to Slice 10.
+- **Hosting for the live demo** — Fly.io (cheap, Postgres-friendly) vs. HF Spaces (ML community visibility). Decision before Slice 9.
+- **Langfuse self-hosted vs. cloud** — cloud is simpler for Slice 8 but self-hosted avoids sending trace data externally. Decide before Slice 8.

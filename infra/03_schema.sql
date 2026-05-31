@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS repo_metrics_daily (
     issue_closed       INT NOT NULL DEFAULT 0,  -- IssuesEvent where action='closed'
     pr_opened          INT NOT NULL DEFAULT 0,  -- PullRequestEvent where action='opened'
     pr_merged          INT NOT NULL DEFAULT 0,  -- PullRequestEvent where merged=true
-    pr_avg_merge_hours FLOAT,                   -- NULL if no merges that day
+    pr_median_merge_hours FLOAT,                 -- NULL if no merges that day; median is robust to stale-PR outliers
     commit_count       INT NOT NULL DEFAULT 0,  -- PushEvent count (proxy for commits)
 
     -- UNIQUE enforces one row per repo per day AND creates an implicit index,

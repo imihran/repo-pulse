@@ -1,84 +1,67 @@
 # RepoPulse
 
-> **Datadog for open-source repo health.**
-> An AI agent that watches public GitHub projects, notices when a repo's activity meaningfully changes, and **autonomously investigates and explains *why*** — citing the exact PRs, issues, and releases behind the change.
+> **Datadog-style incident investigation, but for open-source repo health.**
+> An autonomous agent that monitors GitHub repositories, detects meaningful changes in their activity, and produces **cited, root-cause explanations** of *why* each change happened.
 
-> ⚠️ Status: **early build.** This README describes the intended system so the flow is clear before code exists. See [`PROJECT.md`](./PROJECT.md) for the full engineering spec and build plan.
-
----
-
-## What it is (in plain English)
-
-Most GitHub analytics tools answer questions you already know to ask ("how many stars did repo X get?"). RepoPulse is different: it runs continuously, **spots unusual changes on its own**, and then acts like an on-call analyst — it digs through the repo's recent activity and writes a short, cited explanation of what happened.
-
-Example output:
-
-> 🔺 **`vllm-project/vllm` — issue-open rate up 4× this week.**
-> Most likely cause: the **v0.x.0** release (3 days ago) introduced a regression in the CUDA backend. 12 of the 41 new issues reference `CUDA out of memory` and link to **PR #XXXX**. Maintainer response time has also risen from ~6h to ~30h.
-> *Confidence: high. Evidence: 3 issues, 1 PR, 1 release — see citations.*
-
-## The problem it solves
-
-When an open-source project's behavior shifts — a spike in issues, a slowdown in PR merges, a drop in contributors — *someone* has to manually scroll through dozens of issues and PRs to figure out why. RepoPulse automates that **detect → investigate → explain** loop.
-
-**v1 focus:** engineering teams evaluating whether an open-source **dependency** is getting healthier or riskier — and why. (Maintainers, DevRel, and ecosystem-watchers come later.)
+**Status:** core detect → investigate → explain loop is working end-to-end. Slices 1–7 complete.
 
 ---
 
-## How it works — the flow
+## What it does
 
-The whole system is one pipeline with a smart agent at the end. Follow a single anomaly through it:
+Most GitHub analytics tools answer questions you already know to ask. RepoPulse runs continuously, **spots unusual changes on its own**, and then acts like an on-call analyst — digging through recent activity and writing a short cited explanation of what happened.
+
+**Real example** — detected on `langchain-ai/langchain`, window Apr 24–30 2025:
 
 ```
-  ┌──────────────┐   1. INGEST          Pull hourly GitHub events (GH Archive)
-  │  GH Archive  │──────────────────▶   + enrich via GitHub API (issue/PR/release text)
-  │ + GitHub API │
-  └──────────────┘
-          │
-          ▼
-  ┌──────────────┐   2. STORE           Structured events → Postgres tables
-  │  Postgres    │                      Unstructured text (issues/PRs) → embeddings
-  │  + pgvector  │                      in pgvector (for semantic search)
-  └──────────────┘
-          │
-          ▼
-  ┌──────────────┐   3. DETECT          Scheduled job scans metrics (star velocity,
-  │  Anomaly     │                      issue-open rate, PR merge time...) and flags
-  │  detector    │                      statistically unusual changes — no human asks.
-  └──────────────┘
-          │  (anomaly fires)
-          ▼
-  ┌──────────────┐   4. INVESTIGATE     The agent decides, step by step, how to dig in:
-  │  Investigator│                        • query Postgres (SQL) for the hard numbers
-  │  AGENT       │                        • semantic-search issue/PR text for the "why"
-  │ (LangGraph)  │                        • read the relevant releases
-  │              │                      It loops, re-queries if evidence is weak.
-  └──────────────┘
-          │
-          ▼
-  ┌──────────────┐   5. EXPLAIN         Writes a short, **cited** root-cause narrative
-  │  Report +    │                      with a confidence level. Every claim links to
-  │  citations   │                      the SQL result or the exact issue/PR it used.
-  └──────────────┘
-          │
-          ▼
-  ┌──────────────┐   6. SERVE           Public feed of auto-generated "repo health reports"
-  │  API + demo  │                      (precomputed) + an on-demand "investigate this repo".
-  └──────────────┘
+Anomaly:    pr_slowdown
+Metric:     pr_median_merge_hours
+Baseline:   6.0h  (prior 28-day median)
+Observed:   72.0h (last 7-day median)
+Z-score:    7.74
 
-  Wrapped around all of it:  EVAL (is the explanation correct?) ·
-  OBSERVABILITY (traces, cost, latency) · GUARDRAILS (injection-safe, cited-only).
+Summary: Significant PR merge slowdown coinciding with the release of
+langchain-core v0.3.56 and an active repository restructuring effort
+(langchain-community moving to a separate repo).
+
+Root cause: Repository restructuring (langchain-community moving to a
+separate repo) combined with concurrent release of v0.3.56 increased
+review complexity and slowed PR merges during this window.
+
+Confidence: MEDIUM
+
+Evidence:
+  • Median merge hours spiked to 333h on April 28 (SQL)
+  • Release of langchain-core v0.3.56 on April 24 introduced multiple changes
+  • PR #31069 "community: move to separate repo" — restructuring in progress
+
+Citations:
+  [sql_result]      SQL: Median merge hours data
+  [release_note]    https://github.com/langchain-ai/langchain/releases/tag/v0.3.56
+  [artifact_chunk]  https://github.com/langchain-ai/langchain/pull/31069
 ```
 
-### The step that matters most (step 4)
+---
 
-The "magic" is the **agent's decision-making**, not the plumbing. For each investigation it chooses the right tool:
+## How it works
 
-- **Counting questions** ("how many issues, how fast are PRs merging?") → it writes and runs **SQL** against Postgres.
-- **"Why" questions** ("what are people complaining about?") → it **semantic-searches** the issue/PR text via embeddings.
-- It combines both, and if the evidence is thin it loops back and tries another query before answering.
+```
+  GH Archive ──┐
+               ├──▶  Postgres + pgvector  ──▶  Anomaly detector  ──▶  Investigator agent
+  GitHub API ──┘     (events, metrics,         (last 7d vs             (LangGraph loop)
+                      embeddings)               prior 28d,                   │
+                                                MAD z-score)                 ▼
+                                                                       Cited report
+                                                                       + confidence
+                                                                       + limitations
+```
 
-That autonomous routing + the cited explanation is what separates RepoPulse from existing "ask GitHub a question" tools.
+**The routing rule** (what makes the agent non-trivial):
+- "How many / trend / average?" → agent runs **SQL** against the metrics tables
+- "Why / what did developers say?" → agent runs **semantic search** over embedded PR/issue text
+- "Did a release happen?" → agent calls **get_release_notes**
+
+The agent loops — if evidence is weak it re-queries — and stops when it can write a grounded report or hits the budget (6 tool calls, 90s).
 
 ---
 
@@ -86,53 +69,182 @@ That autonomous routing + the cited explanation is what separates RepoPulse from
 
 | Layer | Tool | Why |
 |---|---|---|
-| Ingestion / orchestration | **Python runner first → Airflow later** | Prove the loop with a simple scheduled script; add Airflow for production-grade scheduling once the agent works |
-| Storage (structured) | **Postgres** | The numbers: events, metrics, time series |
-| Storage (semantic) | **pgvector** | Embeddings for issue/PR text — one DB, not two |
-| Retrieval | **Vector (pgvector) first → hybrid later** | Vector-only for the first loop; add dense + BM25/sparse once it's closed |
-| Agent | **LangGraph** | Explicit, debuggable investigation state machine |
-| Evaluation | **RAGAS + a golden dataset** | Prove the explanations are faithful/grounded |
-| Observability | **Langfuse** | Traces, token cost, latency per agent step |
-| API / demo | **FastAPI + Streamlit (or Gradio)** | Live, public, "type a repo and watch it work" |
-
-Built **local-first via docker-compose**, designed to be **cloud-portable** (Postgres→a managed warehouse, local Airflow→MWAA, etc.).
-
-## Project structure
-
-Folders appear as we build each phase (kept lean on purpose — no empty scaffolding):
-
-```
-repo-pulse/
-├── README.md            ← you are here (the overview + flow)
-├── PROJECT.md           ← full engineering spec + build plan
-├── docker-compose.yml   ← local stack (added in Phase 1)
-├── ingestion/           ← GH Archive pull + GitHub API enrichment
-├── db/                  ← schema + migrations
-├── detector/            ← anomaly detection jobs
-├── retrieval/           ← hybrid search (dense + sparse)
-├── agent/               ← the LangGraph investigation agent
-├── eval/                ← RAGAS golden dataset + CI gate
-├── api/                 ← FastAPI service
-├── app/                 ← Streamlit/Gradio live demo
-└── docs/                ← architecture notes, sample investigations
-```
-
-## Build roadmap (high level)
-
-Detailed slice-by-slice plan in [`PROJECT.md`](./PROJECT.md).
-
-**MVP:** 3 repos (vLLM, LangChain, dbt-core) × 3 anomaly types (issue-open spike, PR
-merge-time slowdown, star/activity spike) → a few excellent cited reports + a 10-case eval set.
-
-1. **Minimal stack** — Postgres + pgvector locally (Airflow comes later, not first).
-2. **Ingest + prove** — pull a real GH Archive slice; confirm explainable anomalies exist.
-3. **Data model + detector** — daily metrics; flag anomalies (last 7d vs prior 28d).
-4. **Retrieval** — embed issue/PR text (vector-only first; hybrid later).
-5. **Investigator agent** — the SQL-vs-semantic routing loop (the centerpiece).
-6. **Eval + observability + guardrails** — 10 benchmark cases, traces, injection-safe.
-7. **Public demo** — feed of precomputed reports first; on-demand investigation second.
-8. **Harden + launch** — add Airflow, expand the benchmark, publish marquee-repo reports.
+| Data source | **GH Archive** + **GitHub REST API** | Hourly event firehose + PR/issue text |
+| Storage | **Postgres 16 + pgvector 0.8** | One database for structured events and vector embeddings |
+| Anomaly detection | **MAD z-score** (last 7d vs prior 28d) | Robust to outliers; median merge time not mean |
+| Agent framework | **LangGraph** | Explicit, debuggable state machine — every transition visible |
+| LLM | **GPT-4o-mini** (OpenAI) | ~$0.01–0.02 per investigation, well within $0.25 budget |
+| Embeddings | **text-embedding-3-small** (1536 dims) | Semantic search over PR/issue bodies + comments |
+| Vector index | **HNSW** (pgvector) | Fast approximate nearest-neighbour, no retraining needed |
+| Output validation | **Pydantic** | Strict JSON contract — agent can't produce uncited claims |
+| Evaluation | Custom golden benchmark (10 cases) | Citation coverage, budget compliance, latency, groundedness |
+| Local infra | **docker-compose** | One command to start; cloud-portable by design |
 
 ---
 
-*RepoPulse is a learning-first build: the core logic is written by hand and documented as it's built, so every design decision can be explained, not just shipped.*
+## Project structure
+
+```
+repo-pulse/
+├── docker-compose.yml          local Postgres + pgvector
+├── Makefile                    all commands: make up / download / process / detect / investigate / eval
+├── pyproject.toml
+├── .env.example                copy to .env and fill in tokens
+│
+├── infra/
+│   ├── init.sql                activates pgvector extension on first boot
+│   ├── 02_schema.sql           repos + events tables
+│   ├── 03_schema.sql           full schema (metrics, artifacts, anomalies, reports, citations)
+│   └── 04_rename_pr_metric.sql migration: avg → median merge hours
+│
+├── repopulse/
+│   ├── db.py                   Postgres connection factory
+│   ├── manifest.py             download/ingest progress tracker
+│   ├── downloader.py           fetch raw GH Archive .json.gz files to disk
+│   ├── processor.py            filter + upsert events from disk into Postgres
+│   ├── detector.py             aggregate daily metrics; MAD z-score anomaly detection
+│   ├── enricher.py             fetch PR/issue text from GitHub API → github_artifacts
+│   ├── embedder.py             chunk + embed artifacts → pgvector (artifact_chunks)
+│   └── agent.py                LangGraph investigator: SQL + semantic + release tools
+│
+└── eval/
+    ├── golden_cases.json        10-case benchmark with expected evidence URLs
+    ├── prepare.py               set up anomaly rows, enrich, embed all benchmark windows
+    └── evaluator.py             run agent on benchmark; score citation coverage, latency, budget
+```
+
+---
+
+## Run it yourself
+
+### Prerequisites
+
+- Docker + Docker Compose
+- Python 3.10+
+- GitHub personal access token ([create one](https://github.com/settings/tokens) — `repo` read scope)
+- OpenAI API key
+
+### 1. Start the database
+
+```bash
+git clone https://github.com/your-username/repo-pulse
+cd repo-pulse
+cp .env.example .env          # fill in GITHUB_TOKEN and OPENAI_API_KEY
+make up                       # starts Postgres + pgvector on port 5433
+make migrate                  # applies schema (runs infra/02_schema.sql + 03_schema.sql)
+```
+
+### 2. Download and ingest GH Archive data
+
+```bash
+# Step 1: download raw hourly files to data/raw/ (~100 MB each)
+make download ARGS="--start 2025-03-01 --end 2025-04-30"
+
+# Step 2: filter to the 3 watched repos and push into Postgres
+make process ARGS="--start 2025-03-01 --end 2025-04-30 --delete-raw"
+```
+
+`--delete-raw` removes each raw file after processing to reclaim disk space (~100 GB for 60 days). Skip it if you want to keep the raw files for re-processing.
+
+### 3. Detect anomalies
+
+```bash
+make detect ARGS="--window-end 2025-04-30"
+```
+
+Aggregates raw events into daily metrics, computes MAD z-scores (last 7d vs prior 28d), and writes anomaly rows to the `anomalies` table.
+
+### 4. Enrich and embed the anomaly window
+
+```bash
+# Fetch PR text from GitHub API for the anomaly window
+make enrich ARGS="--repo langchain-ai/langchain --start 2025-04-24 --end 2025-04-30"
+
+# Chunk + embed into pgvector
+make embed ARGS="--repo langchain-ai/langchain"
+```
+
+Then build the HNSW vector index:
+```bash
+make psql
+# inside psql:
+CREATE INDEX ON artifact_chunks USING hnsw (embedding vector_cosine_ops);
+\q
+```
+
+### 5. Investigate an anomaly
+
+```bash
+# List anomalies
+make psql
+SELECT id, repo_name, anomaly_type, window_start, window_end, z_score FROM anomalies;
+\q
+
+# Run the agent
+make investigate ARGS="--anomaly-id 7"
+```
+
+### 6. Run the benchmark eval
+
+```bash
+make eval-prepare    # enrich + embed all 10 golden case windows
+make eval            # run agent on all cases, print scores
+make eval ARGS="--judge"   # add LLM-based groundedness scoring
+```
+
+---
+
+## Repos tracked (MVP)
+
+| Repo | Why |
+|---|---|
+| `vllm-project/vllm` | High-velocity AI infra project — lots of activity, clear anomaly signals |
+| `langchain-ai/langchain` | Active restructuring (community split) — real detectable events |
+| `dbt-labs/dbt-core` | Lower-volume contrast — tests noise suppression (min_baseline guard) |
+
+## Anomaly types (MVP)
+
+| Type | Metric | Detection |
+|---|---|---|
+| `pr_slowdown` | `pr_median_merge_hours` | Median time from PR open to merge (robust to stale-PR outliers) |
+| `issue_spike` | `issue_opened` | Daily issue-open rate |
+| `star_spike` | `star_count` | Daily WatchEvent count |
+
+---
+
+## Eval results (10-case benchmark, May 2026)
+
+| Metric | Score |
+|---|---|
+| Budget compliance (≤ 6 tool calls) | **10 / 10** |
+| Latency compliance (< 90s) | **10 / 10** |
+| Confidence match | **10 / 10** |
+| Avg latency | **13.6s** |
+| Avg citation coverage | 0.08 *(known gap — see below)* |
+
+**Known gap:** citation coverage is low because the agent cites SQL results by description (not URL) and the expected URLs point to PRs opened before the enrichment window. Fix tracked in Slice 8.
+
+---
+
+## What's next
+
+| Slice | Description |
+|---|---|
+| 8 | **Observability + guardrails** — Langfuse traces, prompt-injection tests, read-only SQL enforcement, cited-outputs-only validation |
+| 9 | **Public demo** — feed of precomputed reports; report detail with citations + agent trace |
+| 10 | **Harden** — add Airflow for scheduled ingestion; expand golden set; hybrid (BM25) retrieval |
+| 11 | **Launch** — investigate marquee repos; publish first health reports |
+
+---
+
+## Design decisions (key ones)
+
+- **One Postgres instead of a separate vector DB** — pgvector keeps ops simple and enables SQL JOINs between structured metrics and semantic search results in a single query. At our scale (thousands of chunks), there's no performance penalty.
+- **Median not mean for PR merge time** — mean is wrecked by a single 300-day-old PR merging in a quiet week (confirmed by Codex analysis on real data). Median is robust.
+- **MAD z-score not plain z-score** — a single spike in the prior 28d baseline inflates the mean and suppresses future detection. MAD uses the median as its center.
+- **LangGraph over CrewAI** — explicit state machine with visible transitions. Every tool call, observation, and routing decision is inspectable. CrewAI abstracts this away.
+- **Download-then-process, not stream-only** — downloading raw GH Archive files to disk first decouples network failures from processing failures. A crash mid-process restarts from disk without re-downloading.
+
+---
+
+*See [`PROJECT.md`](./PROJECT.md) for the full engineering spec.*

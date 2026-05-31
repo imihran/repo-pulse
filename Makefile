@@ -1,6 +1,6 @@
 # Makefile — convenience shortcuts for the local dev workflow.
 # Run any target with: make <target>   e.g. `make up`
-.PHONY: up down psql logs migrate venv ingest detect
+.PHONY: up down psql logs migrate venv download process detect enrich embed investigate eval-prepare eval
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
@@ -36,12 +36,46 @@ venv:
 	python3 -m venv .venv
 	.venv/bin/pip install -e .
 
-# Run the ingest script. Pass dates via ARGS, e.g.:
-#   make ingest ARGS="--start 2025-03-01 --days 7"
-ingest:
-	python -m repopulse.ingest $(ARGS)
+# Step 1: download raw .json.gz files to data/raw/
+#   make download ARGS="--start 2025-03-01 --end 2025-04-30"
+download:
+	python -m repopulse.downloader $(ARGS)
 
-# Run the detector. Pass args via ARGS, e.g.:
-#   make detect ARGS="--window-end 2025-04-05 --z-threshold 2.5"
+# Step 2: filter and push downloaded files into Postgres
+#   make process ARGS="--start 2025-03-01 --end 2025-04-30"
+#   make process ARGS="--start 2025-03-01 --end 2025-04-30 --delete-raw"
+process:
+	python -m repopulse.processor $(ARGS)
+
+# Run the detector after processing is done
+#   make detect ARGS="--window-end 2025-04-30"
 detect:
 	python -m repopulse.detector $(ARGS)
+
+# Fetch PR/issue text from GitHub API → github_artifacts
+#   make enrich ARGS="--repo langchain-ai/langchain --start 2025-04-24 --end 2025-04-30"
+enrich:
+	python -m repopulse.enricher $(ARGS)
+
+# Chunk + embed artifacts → artifact_chunks (pgvector)
+#   make embed ARGS="--repo langchain-ai/langchain"
+embed:
+	python -m repopulse.embedder $(ARGS)
+
+# Run the investigator agent on a detected anomaly
+#   make investigate ARGS="--anomaly-id 1"
+investigate:
+	python -m repopulse.agent $(ARGS)
+
+# ── Eval ──────────────────────────────────────────────────────────────────────
+
+# Step 1: enrich + embed all golden case windows (run once)
+eval-prepare:
+	python -m eval.prepare
+
+# Step 2: run agent on all golden cases and print scores
+#   make eval
+#   make eval ARGS="--judge"           # add LLM groundedness scoring
+#   make eval ARGS="--skip-existing"   # re-use already-stored reports
+eval:
+	python -m eval.evaluator $(ARGS)

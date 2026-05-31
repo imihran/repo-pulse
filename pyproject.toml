@@ -6,7 +6,11 @@ dependencies = [
     "psycopg[binary]",   # Postgres driver (psycopg3 — the modern one)
     "requests",           # HTTP downloads with streaming support
     "python-dotenv",      # load .env into os.environ
-    # Pydantic, LangGraph, etc. added in later slices
+    "openai",             # embeddings + LLM calls
+    "langgraph>=0.2",     # explicit state-machine agent framework
+    "langchain-openai",   # ChatOpenAI with tool calling
+    "langchain-core",     # BaseMessage, @tool, etc.
+    "pydantic>=2.0",      # strict output contract validation
 ]
 
 [tool.setuptools.packages.find]

@@ -35,7 +35,7 @@ ANOMALY_CHECKS = [
     },
     {
         "anomaly_type": "pr_slowdown",
-        "metric_col":   "pr_avg_merge_hours",
+        "metric_col":   "pr_median_merge_hours",
         "min_baseline":  1.0,   # skip repos with almost no merges
     },
     {
@@ -70,7 +70,7 @@ def aggregate_metrics(conn, start_date: date, end_date: date) -> None:
                 repo_name, date,
                 star_count, fork_count,
                 issue_opened, issue_closed,
-                pr_opened, pr_merged, pr_avg_merge_hours,
+                pr_opened, pr_merged, pr_median_merge_hours,
                 commit_count
             )
             SELECT
@@ -102,18 +102,19 @@ def aggregate_metrics(conn, start_date: date, end_date: date) -> None:
                                    AND (payload->'pull_request'->>'merged')::boolean)
                     AS pr_merged,
 
-                -- When a PR closes, GH Archive includes both created_at and
-                -- merged_at in the payload — so we can compute merge duration
-                -- from a single row without any self-join.
-                AVG(
-                    EXTRACT(EPOCH FROM (
+                -- Median merge time: robust to stale PRs merged in quiet weeks.
+                -- PERCENTILE_CONT(0.5) is SQL's median. One stale PR that was
+                -- open 300 days moves the mean dramatically but barely moves
+                -- the median if most PRs close quickly.
+                PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (
                         (payload->'pull_request'->>'merged_at')::timestamptz
                         - (payload->'pull_request'->>'created_at')::timestamptz
                     )) / 3600.0
                 ) FILTER (WHERE type = 'PullRequestEvent'
                            AND payload->>'action' = 'closed'
                            AND (payload->'pull_request'->>'merged')::boolean)
-                    AS pr_avg_merge_hours,
+                    AS pr_median_merge_hours,
 
                 COUNT(*) FILTER (WHERE type = 'PushEvent')
                     AS commit_count
@@ -123,14 +124,14 @@ def aggregate_metrics(conn, start_date: date, end_date: date) -> None:
             GROUP BY repo_name, (created_at AT TIME ZONE 'UTC')::date
 
             ON CONFLICT (repo_name, date) DO UPDATE SET
-                star_count         = EXCLUDED.star_count,
-                fork_count         = EXCLUDED.fork_count,
-                issue_opened       = EXCLUDED.issue_opened,
-                issue_closed       = EXCLUDED.issue_closed,
-                pr_opened          = EXCLUDED.pr_opened,
-                pr_merged          = EXCLUDED.pr_merged,
-                pr_avg_merge_hours = EXCLUDED.pr_avg_merge_hours,
-                commit_count       = EXCLUDED.commit_count
+                star_count            = EXCLUDED.star_count,
+                fork_count            = EXCLUDED.fork_count,
+                issue_opened          = EXCLUDED.issue_opened,
+                issue_closed          = EXCLUDED.issue_closed,
+                pr_opened             = EXCLUDED.pr_opened,
+                pr_merged             = EXCLUDED.pr_merged,
+                pr_median_merge_hours = EXCLUDED.pr_median_merge_hours,
+                commit_count          = EXCLUDED.commit_count
             """,
             {"start_date": start_date, "end_date": end_date},
         )

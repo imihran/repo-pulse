@@ -46,3 +46,7 @@ pgdata/
 .DS_Store
 .idea/
 .vscode/
+
+# Local planning notes (not for the public repo)
+gpt_audit.md
+notes/

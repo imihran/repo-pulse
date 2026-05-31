@@ -19,7 +19,9 @@ Example output:
 
 ## The problem it solves
 
-When an open-source project's behavior shifts — a spike in issues, a slowdown in PR merges, a drop in contributors — *someone* has to manually scroll through dozens of issues and PRs to figure out why. RepoPulse automates that **detect → investigate → explain** loop. Useful for: maintainers, teams deciding whether a dependency is safe to adopt, OSS investors/DevRel, and anyone tracking an ecosystem.
+When an open-source project's behavior shifts — a spike in issues, a slowdown in PR merges, a drop in contributors — *someone* has to manually scroll through dozens of issues and PRs to figure out why. RepoPulse automates that **detect → investigate → explain** loop.
+
+**v1 focus:** engineering teams evaluating whether an open-source **dependency** is getting healthier or riskier — and why. (Maintainers, DevRel, and ecosystem-watchers come later.)
 
 ---
 
@@ -60,8 +62,8 @@ The whole system is one pipeline with a smart agent at the end. Follow a single 
   └──────────────┘
           │
           ▼
-  ┌──────────────┐   6. SERVE           Live demo (ask about any repo) + a public feed
-  │  API + demo  │                      of auto-generated "repo health reports."
+  ┌──────────────┐   6. SERVE           Public feed of auto-generated "repo health reports"
+  │  API + demo  │                      (precomputed) + an on-demand "investigate this repo".
   └──────────────┘
 
   Wrapped around all of it:  EVAL (is the explanation correct?) ·
@@ -84,10 +86,10 @@ That autonomous routing + the cited explanation is what separates RepoPulse from
 
 | Layer | Tool | Why |
 |---|---|---|
-| Ingestion / orchestration | **Airflow** | Schedule hourly pulls; idempotent backfills |
+| Ingestion / orchestration | **Python runner first → Airflow later** | Prove the loop with a simple scheduled script; add Airflow for production-grade scheduling once the agent works |
 | Storage (structured) | **Postgres** | The numbers: events, metrics, time series |
 | Storage (semantic) | **pgvector** | Embeddings for issue/PR text — one DB, not two |
-| Retrieval | **Hybrid (dense + BM25/sparse)** | Better recall than vector-only |
+| Retrieval | **Vector (pgvector) first → hybrid later** | Vector-only for the first loop; add dense + BM25/sparse once it's closed |
 | Agent | **LangGraph** | Explicit, debuggable investigation state machine |
 | Evaluation | **RAGAS + a golden dataset** | Prove the explanations are faithful/grounded |
 | Observability | **Langfuse** | Traces, token cost, latency per agent step |
@@ -117,16 +119,19 @@ repo-pulse/
 
 ## Build roadmap (high level)
 
-Detailed slice-by-slice plan in [`PROJECT.md`](./PROJECT.md). At a glance:
+Detailed slice-by-slice plan in [`PROJECT.md`](./PROJECT.md).
 
-1. **Data foundation** — local stack + ingest a real slice of GH Archive into Postgres.
-2. **Prove the premise** — confirm detectable, explainable anomalies actually exist in the data.
-3. **Detector** — automated anomaly detection over repo metrics.
-4. **Retrieval** — embed issue/PR text; hybrid search.
+**MVP:** 3 repos (vLLM, LangChain, dbt-core) × 3 anomaly types (issue-open spike, PR
+merge-time slowdown, star/activity spike) → a few excellent cited reports + a 10-case eval set.
+
+1. **Minimal stack** — Postgres + pgvector locally (Airflow comes later, not first).
+2. **Ingest + prove** — pull a real GH Archive slice; confirm explainable anomalies exist.
+3. **Data model + detector** — daily metrics; flag anomalies (last 7d vs prior 28d).
+4. **Retrieval** — embed issue/PR text (vector-only first; hybrid later).
 5. **Investigator agent** — the SQL-vs-semantic routing loop (the centerpiece).
-6. **Eval + observability + guardrails** — the production-grade layer.
-7. **API + live demo.**
-8. **Launch** — investigate ~10 marquee repos; publish the first health reports.
+6. **Eval + observability + guardrails** — 10 benchmark cases, traces, injection-safe.
+7. **Public demo** — feed of precomputed reports first; on-demand investigation second.
+8. **Harden + launch** — add Airflow, expand the benchmark, publish marquee-repo reports.
 
 ---
 

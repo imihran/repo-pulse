@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*secret*
+*credential*
+secrets.json
+service-account*.json
+gha-creds-*.json
+.netrc
+# SSH / GPG keys
+id_rsa
+id_ed25519
+*.gpg
+# Cloud / tool creds
+.aws/
+.config/gh/
+*.token
+langfuse.env
+
+# Data (raw GH Archive dumps, local DB volumes)
+data/
+*.db
+*.sqlite
+pgdata/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

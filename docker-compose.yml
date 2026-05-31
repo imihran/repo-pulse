@@ -1,0 +1,54 @@
+# docker-compose.yml — declares the local infrastructure as code.
+# Run `docker compose up -d` to start everything in the background.
+# Run `docker compose down` to stop (data persists in the named volume).
+# Run `docker compose down -v` to also wipe the volume (full reset).
+
+services:
+  db:
+    # pgvector/pgvector:pg16 is the official image that bundles Postgres 16
+    # with the pgvector extension pre-compiled. Using the upstream postgres:16
+    # image would require manually building the extension from source.
+    image: pgvector/pgvector:pg16
+
+    # Load all POSTGRES_* variables from the .env file in this directory.
+    # .env is gitignored; .env.example is the committed template.
+    env_file: .env
+
+    # These environment variables are what Postgres reads on first boot
+    # to create the default superuser and database.
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    ports:
+      # Format is "host_port:container_port".
+      # Inside the Docker network, other containers always reach Postgres on 5432.
+      # On your laptop, you connect on POSTGRES_PORT (5433 here, to avoid
+      # clashing with any locally installed Postgres on 5432).
+      - "${POSTGRES_PORT:-5432}:5432"
+      # The :-5432 syntax means: use POSTGRES_PORT if set, otherwise fall back to 5432.
+
+    volumes:
+      # Named volume: Docker manages the storage location on your host.
+      # Data survives `docker compose down` but is wiped by `docker compose down -v`.
+      - pgdata:/var/lib/postgresql/data
+
+      # Init script: Postgres auto-runs every file in this directory
+      # on first boot (only when the data directory is empty/new).
+      # The :ro suffix mounts it read-only — the container can't modify it.
+      - ./infra/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+
+    healthcheck:
+      # pg_isready exits 0 when Postgres is accepting connections.
+      # Later services that `depends_on: db` with `condition: service_healthy`
+      # will wait for this to pass before they start.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s   # check every 5 seconds
+      timeout: 5s    # fail the check if it hangs longer than this
+      retries: 10    # mark unhealthy after 10 consecutive failures (~50s)
+
+# Named volumes are declared here so Docker tracks them independently
+# of any specific service. This is what lets data survive container restarts.
+volumes:
+  pgdata:

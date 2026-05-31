@@ -1,0 +1,22 @@
+[project]
+name = "repopulse"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "psycopg[binary]",   # Postgres driver (psycopg3 — the modern one)
+    "requests",           # HTTP downloads with streaming support
+    "python-dotenv",      # load .env into os.environ
+    # Pydantic, LangGraph, etc. added in later slices
+]
+
+[tool.setuptools.packages.find]
+# Without this, setuptools would also try to package infra/, memory/, etc.
+include = ["repopulse*"]
+
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+# pip install -e . makes `repopulse` importable from anywhere in the venv.
+# The -e flag means "editable" — changes to source files take effect immediately
+# without reinstalling.

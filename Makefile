@@ -1,6 +1,6 @@
 # Makefile — convenience shortcuts for the local dev workflow.
 # Run any target with: make <target>   e.g. `make up`
-.PHONY: up down psql logs migrate venv ingest
+.PHONY: up down psql logs migrate venv ingest detect
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
@@ -40,3 +40,8 @@ venv:
 #   make ingest ARGS="--start 2025-03-01 --days 7"
 ingest:
 	python -m repopulse.ingest $(ARGS)
+
+# Run the detector. Pass args via ARGS, e.g.:
+#   make detect ARGS="--window-end 2025-04-05 --z-threshold 2.5"
+detect:
+	python -m repopulse.detector $(ARGS)

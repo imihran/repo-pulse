@@ -1,6 +1,6 @@
 # Makefile — convenience shortcuts for the local dev workflow.
 # Run any target with: make <target>   e.g. `make up`
-.PHONY: up down psql logs migrate venv download process detect enrich embed investigate eval-prepare eval
+.PHONY: up down psql logs migrate venv download process detect enrich embed investigate eval-prepare eval test export serve
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
@@ -72,6 +72,18 @@ investigate:
 # Step 1: enrich + embed all golden case windows (run once)
 eval-prepare:
 	python -m eval.prepare
+
+# Run guardrail tests (no DB or LLM required)
+test:
+	pytest tests/ -v
+
+# Export reports from DB to static JSON for the web frontend
+export:
+	python -m repopulse.export
+
+# Serve the web frontend locally for preview (Python's built-in server)
+serve:
+	cd web && python3 -m http.server 8080
 
 # Step 2: run agent on all golden cases and print scores
 #   make eval

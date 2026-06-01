@@ -11,6 +11,9 @@ dependencies = [
     "langchain-openai",   # ChatOpenAI with tool calling
     "langchain-core",     # BaseMessage, @tool, etc.
     "pydantic>=2.0",      # strict output contract validation
+    "langfuse>=3.0",      # LLM observability: traces, cost, latency per agent step
+    "langchain",          # required by langfuse LangChain callback handler
+    "pytest",             # test runner for guardrail tests
 ]
 
 [tool.setuptools.packages.find]

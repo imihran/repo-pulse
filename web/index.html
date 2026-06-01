@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RepoPulse — Autonomous Repo Health Investigation</title>
+  <meta name="description" content="Autonomous root-cause investigation for open-source repo health. Detects anomalies, investigates with SQL + semantic search, returns cited explanations.">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="logo">REPOPULSE</a>
+    <div class="nav-links">
+      <a href="https://github.com/devmish/repo-pulse" target="_blank" rel="noopener" class="nav-link">
+        <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        Source
+      </a>
+    </div>
+  </div>
+</nav>
+
+<main>
+  <section class="hero">
+    <div class="hero-inner">
+      <div class="hero-badge">AUTONOMOUS INVESTIGATION</div>
+      <h1 class="hero-title">Root-cause analysis for<br>open-source repo health</h1>
+      <p class="hero-sub">
+        Detects statistical anomalies in GitHub activity. Investigates with SQL + semantic search over PR and issue text.
+        Returns cited explanations — no human query required.
+      </p>
+      <div class="stats-strip">
+        <div class="stat">
+          <span class="stat-value" id="stat-reports">—</span>
+          <span class="stat-label">investigations</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <span class="stat-value" id="stat-repos">—</span>
+          <span class="stat-label">repos monitored</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <span class="stat-value" id="stat-latency">—</span>
+          <span class="stat-label">avg latency</span>
+        </div>
+        <div class="stat-divider"></div>
+        <div class="stat">
+          <span class="stat-value">31</span>
+          <span class="stat-label">guardrail tests</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="feed-section">
+    <div class="feed-inner">
+      <div class="feed-header">
+        <span class="feed-title">Investigation Feed</span>
+        <div class="feed-filters">
+          <select id="filter-repo" class="filter-select" aria-label="Filter by repo">
+            <option value="">All repos</option>
+          </select>
+          <select id="filter-type" class="filter-select" aria-label="Filter by anomaly type">
+            <option value="">All anomalies</option>
+            <option value="pr_slowdown">PR Slowdown</option>
+            <option value="issue_spike">Issue Spike</option>
+            <option value="star_spike">Star Spike</option>
+          </select>
+          <select id="filter-confidence" class="filter-select" aria-label="Filter by confidence">
+            <option value="">All confidence</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
+      </div>
+      <div class="feed" id="feed" role="list">
+        <div class="feed-loading">Loading investigations…</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <span class="footer-logo">REPOPULSE</span>
+    <span class="footer-sep">·</span>
+    <span>LangGraph + GPT-4o-mini + pgvector + Langfuse</span>
+  </div>
+</footer>
+
+<script>
+const ANOMALY_LABELS = {
+  pr_slowdown: 'PR Slowdown',
+  issue_spike:  'Issue Spike',
+  star_spike:   'Star Spike',
+};
+const METRIC_UNITS = {
+  pr_median_merge_hours: { unit: 'h',      label: 'Median Merge Time' },
+  issue_opened:          { unit: ' /day',  label: 'Issue Rate'        },
+  star_count:            { unit: ' /day',  label: 'Star Rate'         },
+};
+
+function fmt(value, metricName) {
+  const { unit } = METRIC_UNITS[metricName] || { unit: '' };
+  const v = parseFloat(value);
+  return (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + unit;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function fmtWindow(start, end) {
+  const s = new Date(start);
+  const e = new Date(end);
+  const opts = { month: 'short', day: 'numeric' };
+  const year = e.getFullYear();
+  return `${s.toLocaleDateString('en-US', opts)} – ${e.toLocaleDateString('en-US', opts)}, ${year}`;
+}
+
+function fmtDelta(baseline, observed) {
+  if (!baseline || baseline === 0) return '';
+  const mult = observed / baseline;
+  if (mult >= 2) return `↑${mult.toFixed(0)}×`;
+  if (mult > 1)  return `↑${Math.round((mult - 1) * 100)}%`;
+  if (mult < 1)  return `↓${Math.round((1 - mult) * 100)}%`;
+  return '';
+}
+
+function renderCard(r, i) {
+  const delta = fmtDelta(r.baseline, r.observed);
+  const ghUrl = `https://github.com/${r.repo}`;
+  const detailUrl = `report.html?id=${r.id}`;
+  const highSev = r.z_score > 5;
+
+  return `
+    <a class="card${highSev ? ' high-severity' : ''}"
+       href="${detailUrl}"
+       data-type="${r.anomaly_type}"
+       style="animation-delay:${i * 50}ms"
+       role="listitem">
+      <div class="card-header">
+        <div class="card-meta">
+          <span class="badge badge-${r.anomaly_type}">${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type}</span>
+          <span class="badge badge-${r.confidence}">${r.confidence}</span>
+          <span class="card-repo">
+            ${r.repo}
+            <a class="card-repo-link" href="${ghUrl}" target="_blank" rel="noopener"
+               onclick="event.stopPropagation()" aria-label="Open on GitHub">
+              <svg width="12" height="12" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+              </svg>
+            </a>
+          </span>
+        </div>
+        <span class="card-date">${fmtWindow(r.window_start, r.window_end)}</span>
+      </div>
+
+      <div class="card-metrics">
+        <span class="metric-observed">${fmt(r.observed, r.metric_name)}</span>
+        ${delta ? `<span class="metric-delta">${delta}</span>` : ''}
+        <span class="metric-sep">vs</span>
+        <span class="metric-baseline">${fmt(r.baseline, r.metric_name)} baseline</span>
+        <span class="metric-z">z = ${r.z_score.toFixed(2)}</span>
+      </div>
+
+      <div class="card-summary">${r.root_cause || r.summary || ''}</div>
+
+      <div class="card-footer">
+        <div class="card-chips">
+          ${r.citations_count ? `<span class="chip">${r.citations_count} citation${r.citations_count !== 1 ? 's' : ''}</span>` : ''}
+          <span class="chip">${r.tool_calls} tool calls</span>
+          <span class="chip">${r.duration_s}s</span>
+        </div>
+        <span class="view-link">View report →</span>
+      </div>
+    </a>
+  `;
+}
+
+async function init() {
+  let reports = [];
+  try {
+    const res = await fetch('data/reports.json');
+    reports = await res.json();
+  } catch (e) {
+    document.getElementById('feed').innerHTML = '<div class="feed-empty">Could not load reports.</div>';
+    return;
+  }
+
+  // Stats
+  const repos    = [...new Set(reports.map(r => r.repo))];
+  const avgLat   = reports.length ? (reports.reduce((a, r) => a + r.duration_s, 0) / reports.length).toFixed(1) + 's' : '—';
+  document.getElementById('stat-reports').textContent  = reports.length;
+  document.getElementById('stat-repos').textContent    = repos.length;
+  document.getElementById('stat-latency').textContent  = avgLat;
+
+  // Populate repo filter
+  const repoSel = document.getElementById('filter-repo');
+  repos.forEach(repo => {
+    const opt = document.createElement('option');
+    opt.value = repo;
+    opt.textContent = repo;
+    repoSel.appendChild(opt);
+  });
+
+  function render() {
+    const typeFilter  = document.getElementById('filter-type').value;
+    const repoFilter  = repoSel.value;
+    const confFilter  = document.getElementById('filter-confidence').value;
+
+    const filtered = reports.filter(r =>
+      (!typeFilter || r.anomaly_type === typeFilter) &&
+      (!repoFilter || r.repo === repoFilter) &&
+      (!confFilter || r.confidence === confFilter)
+    );
+
+    const feed = document.getElementById('feed');
+    if (!filtered.length) {
+      feed.innerHTML = '<div class="feed-empty">No investigations match the current filters.</div>';
+      return;
+    }
+    feed.innerHTML = filtered.map((r, i) => renderCard(r, i)).join('');
+  }
+
+  render();
+  ['filter-type', 'filter-repo', 'filter-confidence'].forEach(id =>
+    document.getElementById(id).addEventListener('change', render)
+  );
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RepoPulse — Investigation Report</title>
+  <meta name="description" content="Autonomous investigation report for a GitHub repo health anomaly.">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="logo">REPOPULSE</a>
+    <div class="nav-links">
+      <a href="https://github.com/devmish/repo-pulse" target="_blank" rel="noopener" class="nav-link">
+        <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        Source
+      </a>
+    </div>
+  </div>
+</nav>
+
+<main class="report-main" id="report-main">
+  <div class="feed-loading">Loading investigation…</div>
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <span class="footer-logo">REPOPULSE</span>
+    <span class="footer-sep">·</span>
+    <span>LangGraph + GPT-4o-mini + pgvector + Langfuse</span>
+  </div>
+</footer>
+
+<script>
+const ANOMALY_LABELS = {
+  pr_slowdown: 'PR Slowdown',
+  issue_spike:  'Issue Spike',
+  star_spike:   'Star Spike',
+};
+const METRIC_LABELS = {
+  pr_median_merge_hours: 'Median Merge Time',
+  issue_opened:          'Issue Open Rate',
+  star_count:            'Star Rate',
+};
+const METRIC_UNITS = {
+  pr_median_merge_hours: 'h',
+  issue_opened:          ' /day',
+  star_count:            ' /day',
+};
+
+function fmt(value, metricName) {
+  const unit = METRIC_UNITS[metricName] || '';
+  const v = parseFloat(value);
+  return (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + unit;
+}
+
+function fmtWindow(start, end) {
+  const s = new Date(start);
+  const e = new Date(end);
+  const opts = { month: 'short', day: 'numeric' };
+  return `${s.toLocaleDateString('en-US', opts)} – ${e.toLocaleDateString('en-US', { ...opts, year: 'numeric' })}`;
+}
+
+function fmtDatetime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function citationTypeLabel(type) {
+  return { sql_result: 'SQL', artifact_chunk: 'PR / Issue', release_note: 'Release Note' }[type] || type;
+}
+
+function renderReport(r) {
+  const ghUrl   = `https://github.com/${r.repo}`;
+  const metricLabel = METRIC_LABELS[r.metric_name] || r.metric_name;
+
+  const evidenceHtml = (r.evidence && r.evidence.length)
+    ? `<ol class="evidence-list">
+        ${r.evidence.map((e, i) => `
+          <li class="evidence-item">
+            <span class="evidence-num">${String(i + 1).padStart(2, '0')}</span>
+            <span>${e}</span>
+          </li>`).join('')}
+       </ol>`
+    : '<p style="color:var(--text-3);font-size:13px;font-family:var(--font-mono)">No evidence bullets recorded.</p>';
+
+  const citationsHtml = (r.citations && r.citations.length)
+    ? `<div class="citations-grid">
+        ${r.citations.map(c => `
+          <div class="citation-card">
+            <div class="citation-top">
+              <span class="badge badge-${c.type}">${citationTypeLabel(c.type)}</span>
+              ${c.url && !c.url.startsWith('SQL')
+                ? `<a class="citation-url" href="${c.url}" target="_blank" rel="noopener">${c.url}</a>`
+                : `<span class="citation-url" style="color:var(--text-3)">${c.url || ''}</span>`}
+            </div>
+            ${c.excerpt ? `<div class="citation-excerpt">"${c.excerpt}"</div>` : ''}
+          </div>`).join('')}
+       </div>`
+    : '<p style="color:var(--text-3);font-size:13px;font-family:var(--font-mono)">No citations recorded for this investigation.</p>';
+
+  return `
+    <a href="index.html" class="back-link">← Back to feed</a>
+
+    <div class="report-header">
+      <div class="report-header-top">
+        <span class="badge badge-${r.anomaly_type}">${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type}</span>
+        <span class="badge badge-${r.confidence}">${r.confidence} confidence</span>
+      </div>
+      <div class="report-repo">
+        ${r.repo}
+        <a href="${ghUrl}" target="_blank" rel="noopener" aria-label="Open on GitHub">
+          <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+        </a>
+      </div>
+      <div class="report-window">${fmtWindow(r.window_start, r.window_end)} · Investigated ${fmtDatetime(r.created_at)}</div>
+    </div>
+
+    <div class="anomaly-panel">
+      <div class="anomaly-side observed">
+        <span class="anomaly-label">Observed (last 7d)</span>
+        <span class="anomaly-value">${fmt(r.observed, r.metric_name)}</span>
+        <span class="anomaly-sub">${metricLabel}</span>
+      </div>
+      <div class="anomaly-arrow">
+        <span class="arrow-icon">→</span>
+        <span class="anomaly-zscore">z = ${r.z_score.toFixed(2)}</span>
+      </div>
+      <div class="anomaly-side baseline">
+        <span class="anomaly-label">Baseline (prior 28d)</span>
+        <span class="anomaly-value">${fmt(r.baseline, r.metric_name)}</span>
+        <span class="anomaly-sub">${metricLabel} median</span>
+      </div>
+    </div>
+
+    <div class="report-section">
+      <div class="section-label">Root Cause</div>
+      <p class="root-cause-text">${r.root_cause || r.summary || 'No root cause recorded.'}</p>
+    </div>
+
+    <div class="report-section">
+      <div class="section-label">Evidence</div>
+      ${evidenceHtml}
+    </div>
+
+    <div class="report-section">
+      <div class="section-label">Citations — ${(r.citations || []).length} source${(r.citations || []).length !== 1 ? 's' : ''}</div>
+      ${citationsHtml}
+    </div>
+
+    ${r.limitations ? `
+    <div class="report-section">
+      <div class="section-label">Limitations</div>
+      <div class="limitations-text">${r.limitations}</div>
+    </div>` : ''}
+
+    <div class="report-footer-strip">
+      <span>Investigated by RepoPulse</span>
+      <span class="rfooter-sep">·</span>
+      <span>${r.tool_calls} tool call${r.tool_calls !== 1 ? 's' : ''}</span>
+      <span class="rfooter-sep">·</span>
+      <span>${r.duration_s}s</span>
+      <span class="rfooter-sep">·</span>
+      <span>LangGraph + GPT-4o-mini</span>
+    </div>
+  `;
+}
+
+async function init() {
+  const params = new URLSearchParams(window.location.search);
+  const id     = params.get('id');
+  const main   = document.getElementById('report-main');
+
+  if (!id) {
+    main.innerHTML = '<div class="feed-empty">No report ID specified. <a href="index.html" style="color:var(--amber)">← Back to feed</a></div>';
+    return;
+  }
+
+  let report;
+  try {
+    const res = await fetch(`data/reports/${id}.json`);
+    if (!res.ok) throw new Error('not found');
+    report = await res.json();
+  } catch (e) {
+    main.innerHTML = `<div class="feed-empty">Report #${id} not found. <a href="index.html" style="color:var(--amber)">← Back to feed</a></div>`;
+    return;
+  }
+
+  document.title = `RepoPulse — ${report.repo} ${ANOMALY_LABELS[report.anomaly_type] || report.anomaly_type}`;
+  main.innerHTML = renderReport(report);
+}
+
+init();
+</script>
+</body>
+</html>

@@ -40,7 +40,10 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
+from pydantic import model_validator
+
 from repopulse.db import get_connection
+from repopulse.observability import get_langfuse_handler, is_enabled as langfuse_enabled
 
 load_dotenv()
 
@@ -65,6 +68,21 @@ class InvestigationReport(BaseModel):
     evidence:    list[str] = Field(description="Bullet-point list of supporting facts")
     citations:   list[Citation]
     limitations: str = Field(description="What the agent could not determine or verify")
+
+    @model_validator(mode="after")
+    def evidence_requires_citations(self) -> "InvestigationReport":
+        """
+        Cited-outputs-only guardrail: if the agent produced evidence bullets
+        but zero citations, the report is invalid — every claim needs a source.
+        This is enforced at the type level so it fires before the report is
+        stored or returned to the caller.
+        """
+        if self.evidence and not self.citations:
+            raise ValueError(
+                "Report has evidence bullets but no citations. "
+                "Every factual claim must map to a citation."
+            )
+        return self
 
 
 # ── Agent state ────────────────────────────────────────────────────────────────
@@ -128,9 +146,13 @@ def run_sql(query: str) -> str:
 
     repos: id INT, name TEXT
     """
-    # Safety: only allow SELECT / WITH ... SELECT (no writes, no DDL)
+    # Safety: only allow SELECT / WITH ... SELECT (no writes, no DDL).
+    # Also block semicolons — `SELECT 1; DROP TABLE events` starts with SELECT
+    # but the second statement is a write. Legitimate queries never need semicolons.
     normalized = query.strip().lstrip("-– \n").upper()
     if not re.match(r"^(SELECT|WITH)\b", normalized):
+        return "Error: only SELECT queries are permitted."
+    if ";" in query:
         return "Error: only SELECT queries are permitted."
 
     conn = get_connection()
@@ -489,12 +511,31 @@ BUDGET: you have at most {MAX_TOOL_CALLS} tool calls. Plan before you call."""
         "start_time":      start_time,
     }
 
-    final_state = graph.invoke(initial_state)
+    # Langfuse traces every LLM call and tool execution as a named trace.
+    # If keys aren't configured, get_langfuse_handler returns [] and this is a no-op.
+    langfuse_callbacks = get_langfuse_handler(
+        trace_name=f"investigate:{anomaly['repo_name']}:{anomaly['anomaly_type']}",
+        metadata={
+            "anomaly_id":   anomaly_id,
+            "repo":         anomaly["repo_name"],
+            "anomaly_type": anomaly["anomaly_type"],
+            "window_start": str(anomaly["window_start"]),
+            "window_end":   str(anomaly["window_end"]),
+            "z_score":      anomaly["z_score"],
+        },
+    )
+
+    final_state = graph.invoke(
+        initial_state,
+        config={"callbacks": langfuse_callbacks},
+    )
 
     duration   = time.time() - start_time
     tool_calls = final_state["tool_calls_used"]
 
     print(f"\n  Investigation complete: {tool_calls} tool calls, {duration:.1f}s")
+    if langfuse_enabled():
+        print(f"  Trace sent to Langfuse")
 
     report    = generate_report(final_state["messages"], anomaly_context)
     report_id = store_report(anomaly_id, report, duration, tool_calls)

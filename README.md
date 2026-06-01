@@ -3,7 +3,7 @@
 > **Datadog-style incident investigation, but for open-source repo health.**
 > An autonomous agent that monitors GitHub repositories, detects meaningful changes in their activity, and produces **cited, root-cause explanations** of *why* each change happened.
 
-**Status:** core detect → investigate → explain loop is working end-to-end. Slices 1–7 complete.
+**Status:** fully deployed. Slices 1–9 complete. Live at **[repopulse.pages.dev](https://repopulse.pages.dev)** → **[repopulse.devmish.com](https://repopulse.devmish.com)** *(custom domain propagating)*
 
 ---
 
@@ -77,8 +77,12 @@ The agent loops — if evidence is weak it re-queries — and stops when it can 
 | Embeddings | **text-embedding-3-small** (1536 dims) | Semantic search over PR/issue bodies + comments |
 | Vector index | **HNSW** (pgvector) | Fast approximate nearest-neighbour, no retraining needed |
 | Output validation | **Pydantic** | Strict JSON contract — agent can't produce uncited claims |
+| Observability | **Langfuse** | Every agent step traced: tool calls, token counts, cost, latency |
+| Guardrails | **pytest** (31 tests) | SQL injection blocked, prompt injection stopped at output contract, cited-only validation |
 | Evaluation | Custom golden benchmark (10 cases) | Citation coverage, budget compliance, latency, groundedness |
 | Local infra | **docker-compose** | One command to start; cloud-portable by design |
+| Frontend | **Vanilla HTML/CSS/JS** | Static site — no build step, no framework, deploys to CDN instantly |
+| Hosting | **Cloudflare Pages** | Free tier, global CDN, SSL, custom domain — `repopulse.devmish.com` |
 
 ---
 
@@ -87,7 +91,7 @@ The agent loops — if evidence is weak it re-queries — and stops when it can 
 ```
 repo-pulse/
 ├── docker-compose.yml          local Postgres + pgvector
-├── Makefile                    all commands: make up / download / process / detect / investigate / eval
+├── Makefile                    all commands: make up / download / process / detect / investigate / eval / export
 ├── pyproject.toml
 ├── .env.example                copy to .env and fill in tokens
 │
@@ -105,12 +109,28 @@ repo-pulse/
 │   ├── detector.py             aggregate daily metrics; MAD z-score anomaly detection
 │   ├── enricher.py             fetch PR/issue text from GitHub API → github_artifacts
 │   ├── embedder.py             chunk + embed artifacts → pgvector (artifact_chunks)
-│   └── agent.py                LangGraph investigator: SQL + semantic + release tools
+│   ├── agent.py                LangGraph investigator: SQL + semantic + release tools
+│   ├── export.py               export reports from DB → static JSON for Cloudflare Pages
+│   └── observability.py        Langfuse callback handler (no-op if keys absent)
 │
-└── eval/
-    ├── golden_cases.json        10-case benchmark with expected evidence URLs
-    ├── prepare.py               set up anomaly rows, enrich, embed all benchmark windows
-    └── evaluator.py             run agent on benchmark; score citation coverage, latency, budget
+├── eval/
+│   ├── golden_cases.json        10-case benchmark with expected evidence URLs
+│   ├── prepare.py               set up anomaly rows, enrich, embed all benchmark windows
+│   └── evaluator.py             run agent on benchmark; score citation coverage, latency, budget
+│
+├── tests/
+│   └── test_guardrails.py       31 guardrail tests (SQL safety, injection, output contract)
+│
+└── web/                         static frontend — deployed to Cloudflare Pages
+    ├── index.html               incident-style feed of all investigations
+    ├── report.html              full report detail with citations panel
+    ├── _headers                 Cloudflare security headers
+    ├── _redirects               URL routing
+    ├── assets/
+    │   └── style.css            dark monitoring-tool aesthetic (Syne + JetBrains Mono)
+    └── data/                    pre-generated JSON (regenerate with `make export`)
+        ├── reports.json         feed index
+        └── reports/{id}.json    individual report detail
 ```
 
 ---
@@ -192,6 +212,21 @@ make eval            # run agent on all cases, print scores
 make eval ARGS="--judge"   # add LLM-based groundedness scoring
 ```
 
+### 7. Run the guardrail tests
+
+```bash
+make test            # 31 tests, no DB or LLM required
+```
+
+### 8. Deploy the public demo
+
+```bash
+make export          # export reports from DB to web/data/ (static JSON)
+wrangler pages deploy ./web --project-name repopulse --branch main
+```
+
+Live at **https://repopulse.pages.dev** · Custom domain: **https://repopulse.devmish.com**
+
 ---
 
 ## Repos tracked (MVP)
@@ -222,7 +257,40 @@ make eval ARGS="--judge"   # add LLM-based groundedness scoring
 | Avg latency | **13.6s** |
 | Avg citation coverage | 0.08 *(known gap — see below)* |
 
-**Known gap:** citation coverage is low because the agent cites SQL results by description (not URL) and the expected URLs point to PRs opened before the enrichment window. Fix tracked in Slice 8.
+**Known gap:** citation coverage is low because the agent cites SQL results by description (not URL) and the expected URLs point to PRs opened before the enrichment window. Fix tracked in Slice 10.
+
+---
+
+## How it was built — slice by slice (plain English)
+
+The project was built in 11 incremental slices. Each slice had to be working and explainable before the next one started.
+
+**Slice 1 — Turn on the database**
+Before writing a single line of application code, we set up a local database that can store both regular data (event counts, dates, numbers) and AI vectors (the mathematical representations of text). One command starts the whole thing.
+
+**Slice 2 — Get real data in**
+GitHub publishes a record of every public action on the platform — every star, comment, pull request, and code push — as compressed files you can download. We wrote two scripts: one that downloads those files to disk, and one that reads them and keeps only the events for our three watched repos. 60 days of data, 33,563 events.
+
+**Slice 3 — Design the full data model**
+Before building the intelligence layer, we designed all the tables the system would ever need: raw events, daily summaries, issue and PR text, text chunks for AI search, detected anomalies, investigation reports, and citations. Getting this right upfront means no schema rewrites later.
+
+**Slice 4 — Spot unusual changes automatically**
+Every day, the system compares the last 7 days of activity against the prior 28 days. If something is statistically unusual — PRs taking much longer to merge, a spike in issues, a surge in stars — it gets flagged. We use a robust statistical method (MAD z-score) that isn't fooled by a single weird day in the history. We also discovered through data analysis that using the *median* merge time (not the average) prevents one very old PR from triggering a false alarm.
+
+**Slice 5 — Make the text searchable by meaning**
+Pull requests and issues are written in natural language. To let the AI ask questions like "what were developers complaining about this week?", we fetch the full text of each PR (title, description, comments) from GitHub, chop it into chunks, and convert each chunk into a mathematical vector using OpenAI's embedding model. These vectors are stored in the database and let us find semantically similar content without exact keyword matching.
+
+**Slice 6 — The investigator agent**
+This is the centrepiece. When an anomaly is detected, the agent is given three tools: one to run database queries (for counts and trends), one to search PR and issue text by meaning (for understanding why), and one to check release notes (for spotting if a new version caused the change). The agent decides which tool to use at each step, runs it, reads the result, and decides whether it has enough evidence to write a report — or whether it needs to dig deeper. It has a budget of 6 tool calls and 90 seconds.
+
+**Slice 7 — Check if the agent is actually right**
+We built a benchmark of 10 hand-crafted test cases — situations where we already know what happened and what evidence the agent should find. The evaluator runs the agent on every case and scores it: Did it cite the right pull requests? Did it stay within budget? Did it finish in time? Did it pick the right confidence level? This gives us a baseline we can track as we improve the system.
+
+**Slice 8 — Make it trustworthy**
+Two things need to be true before this system can be trusted in production: we need to see exactly what it's doing (every LLM call, token count, and cost), and we need to know it can't be hijacked by malicious content in a PR. This slice wires in Langfuse — every investigation now produces a full trace visible in a dashboard showing each tool call, how long it took, and what it cost. We also added a guardrail test suite: 31 automated tests verify that the agent can't be manipulated by prompt injection attacks, can't run destructive SQL, and can never produce a report that makes claims without citing evidence.
+
+**Slice 9 — Put it on the internet**
+The pipeline produces reports, but they only lived in a local database. This slice exposes them publicly. A Python export script reads every investigation from the database and writes it as a static JSON file. A hand-built frontend — dark monitoring-tool aesthetic, incident-style feed cards, full citation panel — loads those files and renders them. The whole thing is deployed to Cloudflare Pages under a custom subdomain. No live backend needed: the reports are pre-generated and the site is pure static HTML/CSS/JS served from a global CDN. Consultation with Codex confirmed this was the right architecture: standalone subdomain, static JSON feed, Cloudflare Pages — not GitHub Pages, not a portfolio section.
 
 ---
 
@@ -230,10 +298,8 @@ make eval ARGS="--judge"   # add LLM-based groundedness scoring
 
 | Slice | Description |
 |---|---|
-| 8 | **Observability + guardrails** — Langfuse traces, prompt-injection tests, read-only SQL enforcement, cited-outputs-only validation |
-| 9 | **Public demo** — feed of precomputed reports; report detail with citations + agent trace |
-| 10 | **Harden** — add Airflow for scheduled ingestion; expand golden set; hybrid (BM25) retrieval |
-| 11 | **Launch** — investigate marquee repos; publish first health reports |
+| 10 | **Harden** — ingest current data (last 35 days, not year-old data); add Airflow for scheduled ingestion; improve search quality; expand the benchmark |
+| 11 | **Launch** — investigate marquee repos with fresh data; publish health reports; post on HN |
 
 ---
 

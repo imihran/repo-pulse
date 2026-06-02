@@ -111,6 +111,18 @@ function fmt(value, metricName) {
   return (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + unit;
 }
 
+function fmtMultiplier(baseline, observed, metricName) {
+  if (!baseline || baseline === 0) return null;
+  const mult = observed / baseline;
+  const obs  = fmt(observed, metricName);
+  const base = fmt(baseline, metricName);
+  if (mult >= 2)   return { label: `${mult.toFixed(0)}× normal`, detail: `${obs} vs ${base} typical`, up: true };
+  if (mult > 1.1)  return { label: `${Math.round((mult-1)*100)}% above normal`, detail: `${obs} vs ${base} typical`, up: true };
+  if (mult < 0.5)  return { label: `${(1/mult).toFixed(0)}× below normal`, detail: `${obs} vs ${base} typical`, up: false };
+  if (mult < 0.9)  return { label: `${Math.round((1-mult)*100)}% below normal`, detail: `${obs} vs ${base} typical`, up: false };
+  return { label: obs, detail: `vs ${base} typical`, up: false };
+}
+
 function fmtDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -135,10 +147,11 @@ function fmtDelta(baseline, observed) {
 }
 
 function renderCard(r, i) {
-  const delta = fmtDelta(r.baseline, r.observed);
-  const ghUrl = `https://github.com/${r.repo}`;
+  const mult    = fmtMultiplier(r.baseline, r.observed, r.metric_name);
+  const ghUrl   = `https://github.com/${r.repo}`;
   const detailUrl = `report.html?id=${r.id}`;
   const highSev = r.z_score > 5;
+  const shortRepo = r.repo.split('/')[1];  // vllm, langchain, dbt-core
 
   return `
     <a class="card${highSev ? ' high-severity' : ''}"
@@ -149,34 +162,31 @@ function renderCard(r, i) {
       <div class="card-header">
         <div class="card-meta">
           <span class="badge badge-${r.anomaly_type}">${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type}</span>
-          <span class="badge badge-${r.confidence}">${r.confidence}</span>
+          <span class="badge badge-${r.confidence}">${r.confidence} confidence</span>
           <span class="card-repo">
-            ${r.repo}
             <a class="card-repo-link" href="${ghUrl}" target="_blank" rel="noopener"
-               onclick="event.stopPropagation()" aria-label="Open on GitHub">
+               onclick="event.stopPropagation()" aria-label="Open ${r.repo} on GitHub">
               <svg width="12" height="12" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
                 <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
               </svg>
             </a>
+            ${shortRepo}
           </span>
         </div>
         <span class="card-date">${fmtWindow(r.window_start, r.window_end)}</span>
       </div>
 
+      ${mult ? `
       <div class="card-metrics">
-        <span class="metric-observed">${fmt(r.observed, r.metric_name)}</span>
-        ${delta ? `<span class="metric-delta">${delta}</span>` : ''}
-        <span class="metric-sep">vs</span>
-        <span class="metric-baseline">${fmt(r.baseline, r.metric_name)} baseline</span>
-        <span class="metric-z">z = ${r.z_score.toFixed(2)}</span>
-      </div>
+        <span class="metric-observed${mult.up ? '' : ' metric-down'}">${mult.label}</span>
+        <span class="metric-detail">${mult.detail}</span>
+      </div>` : ''}
 
       <div class="card-summary">${r.root_cause || r.summary || ''}</div>
 
       <div class="card-footer">
         <div class="card-chips">
-          ${r.citations_count ? `<span class="chip">${r.citations_count} citation${r.citations_count !== 1 ? 's' : ''}</span>` : ''}
-          <span class="chip">${r.tool_calls} tool calls</span>
+          ${r.citations_count ? `<span class="chip">${r.citations_count} source${r.citations_count !== 1 ? 's' : ''}</span>` : ''}
           <span class="chip">${r.duration_s}s</span>
         </div>
         <span class="view-link">View report →</span>

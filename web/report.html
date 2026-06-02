@@ -71,8 +71,13 @@ function fmtDatetime(iso) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+const CITATION_LABELS = {
+  sql_result:     'Query Result',
+  artifact_chunk: 'GitHub PR',
+  release_note:   'Release Note',
+};
 function citationTypeLabel(type) {
-  return { sql_result: 'SQL', artifact_chunk: 'PR / Issue', release_note: 'Release Note' }[type] || type;
+  return CITATION_LABELS[type] || type;
 }
 
 function renderReport(r) {
@@ -124,19 +129,20 @@ function renderReport(r) {
     </div>
 
     <div class="anomaly-panel">
-      <div class="anomaly-side observed">
-        <span class="anomaly-label">Observed (last 7d)</span>
-        <span class="anomaly-value">${fmt(r.observed, r.metric_name)}</span>
-        <span class="anomaly-sub">${metricLabel}</span>
+      <div class="anomaly-side baseline">
+        <span class="anomaly-label">Normal (prior 28 days)</span>
+        <span class="anomaly-value">${fmt(r.baseline, r.metric_name)}</span>
+        <span class="anomaly-sub">${metricLabel} median</span>
       </div>
       <div class="anomaly-arrow">
         <span class="arrow-icon">→</span>
+        ${r.baseline > 0 ? `<span class="anomaly-mult">${(r.observed / r.baseline).toFixed(0)}×</span>` : ''}
         <span class="anomaly-zscore">z = ${r.z_score.toFixed(2)}</span>
       </div>
-      <div class="anomaly-side baseline">
-        <span class="anomaly-label">Baseline (prior 28d)</span>
-        <span class="anomaly-value">${fmt(r.baseline, r.metric_name)}</span>
-        <span class="anomaly-sub">${metricLabel} median</span>
+      <div class="anomaly-side observed">
+        <span class="anomaly-label">During anomaly (last 7d)</span>
+        <span class="anomaly-value">${fmt(r.observed, r.metric_name)}</span>
+        <span class="anomaly-sub">${metricLabel}</span>
       </div>
     </div>
 
@@ -164,11 +170,9 @@ function renderReport(r) {
     <div class="report-footer-strip">
       <span>Investigated by RepoPulse</span>
       <span class="rfooter-sep">·</span>
-      <span>${r.tool_calls} tool call${r.tool_calls !== 1 ? 's' : ''}</span>
-      <span class="rfooter-sep">·</span>
-      <span>${r.duration_s}s</span>
-      <span class="rfooter-sep">·</span>
       <span>LangGraph + GPT-4o-mini</span>
+      <span class="rfooter-sep">·</span>
+      <span>${r.tool_calls} queries in ${r.duration_s}s</span>
     </div>
   `;
 }

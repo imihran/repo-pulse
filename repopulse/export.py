@@ -28,11 +28,15 @@ def decimal_default(obj):
 
 
 def fetch_reports(conn) -> list[dict]:
-    """Fetch all reports joined with their anomaly and citations."""
+    """
+    Fetch the latest report per anomaly, sorted by window_end descending.
+    Using DISTINCT ON ensures we never show stale re-runs of the same anomaly.
+    """
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT
+            SELECT DISTINCT ON (r.anomaly_id)
                 r.id,
+                r.anomaly_id,
                 r.created_at,
                 r.summary,
                 r.root_cause,
@@ -51,7 +55,8 @@ def fetch_reports(conn) -> list[dict]:
                 a.z_score
             FROM investigation_reports r
             JOIN anomalies a ON a.id = r.anomaly_id
-            ORDER BY r.created_at DESC
+            WHERE r.confidence != 'error'
+            ORDER BY r.anomaly_id, r.created_at DESC
         """)
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -141,6 +146,9 @@ def main() -> None:
     conn    = get_connection()
     reports = fetch_reports(conn)
     conn.close()
+
+    # Sort feed by window_end descending (most recent anomaly first)
+    reports.sort(key=lambda r: r["window_end"], reverse=True)
 
     print(f"Exporting {len(reports)} reports...")
     write_feed(reports)

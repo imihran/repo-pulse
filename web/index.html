@@ -168,7 +168,7 @@ function makeHeadline(r) {
 
 function renderCard(r, i) {
   const mult      = fmtMultiplier(r.baseline, r.observed, r.metric_name);
-  const detailUrl = `report.html?id=${r.id}`;
+  const detailUrl = `report?id=${r.id}`;
   const highSev   = r.z_score > 5;
   const headline  = makeHeadline(r);
 

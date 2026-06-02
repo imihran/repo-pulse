@@ -1,1 +1,2 @@
-/report  /report.html  200
+# Cloudflare Pages serves .html files at clean URLs automatically.
+# No manual redirects needed.

@@ -87,8 +87,9 @@ export:
 	python -m repopulse.export
 
 # Serve the web frontend locally for preview (Python's built-in server)
+# Uses port 8081 so it doesn't conflict with Airflow on 8080.
 serve:
-	cd web && python3 -m http.server 8080
+	cd web && python3 -m http.server 8081
 
 # Step 2: run agent on all golden cases and print scores
 #   make eval

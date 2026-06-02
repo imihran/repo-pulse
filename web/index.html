@@ -13,12 +13,7 @@
   <div class="nav-inner">
     <a href="index.html" class="logo">REPOPULSE</a>
     <div class="nav-links">
-      <a href="https://github.com/devmish/repo-pulse" target="_blank" rel="noopener" class="nav-link">
-        <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-        </svg>
-        Source
-      </a>
+      <a href="https://github.com/devmish/repo-pulse" target="_blank" rel="noopener" class="nav-link">How it works ↗</a>
     </div>
   </div>
 </nav>
@@ -29,13 +24,14 @@
       <div class="hero-badge">AUTONOMOUS INVESTIGATION</div>
       <h1 class="hero-title">Root-cause analysis for<br>open-source repo health</h1>
       <p class="hero-sub">
-        Detects statistical anomalies in GitHub activity. Investigates with SQL + semantic search over PR and issue text.
-        Returns cited explanations — no human query required.
+        Watches open-source repos around the clock. When something unusual happens — PRs taking
+        longer to merge, a sudden surge in issues, a star spike — it investigates automatically
+        and explains why, with sources.
       </p>
       <div class="stats-strip">
         <div class="stat">
           <span class="stat-value" id="stat-reports">—</span>
-          <span class="stat-label">investigations</span>
+          <span class="stat-label">anomalies investigated</span>
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
@@ -44,13 +40,13 @@
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
-          <span class="stat-value" id="stat-latency">—</span>
-          <span class="stat-label">avg latency</span>
+          <span class="stat-value">Mar – Apr 2025</span>
+          <span class="stat-label">data window</span>
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
-          <span class="stat-value">31</span>
-          <span class="stat-label">guardrail tests</span>
+          <span class="stat-value">GPT-4o-mini</span>
+          <span class="stat-label">investigation model</span>
         </div>
       </div>
     </div>
@@ -146,12 +142,35 @@ function fmtDelta(baseline, observed) {
   return '';
 }
 
+function makeHeadline(r) {
+  const repo  = r.repo.split('/')[1];
+  const mult  = r.baseline > 0 ? r.observed / r.baseline : 0;
+  const mxStr = mult >= 2 ? `${mult.toFixed(0)}×` : mult > 1.05 ? `+${Math.round((mult-1)*100)}%` : '';
+  const unit  = METRIC_UNITS[r.metric_name] || {};
+
+  if (r.anomaly_type === 'pr_slowdown') {
+    return mxStr
+      ? `${repo}: PR merge time was ${mxStr} slower than normal`
+      : `${repo}: PR merge time anomaly detected`;
+  }
+  if (r.anomaly_type === 'issue_spike') {
+    return mxStr
+      ? `${repo}: issue rate spiked ${mxStr} above normal`
+      : `${repo}: unusual spike in new issues`;
+  }
+  if (r.anomaly_type === 'star_spike') {
+    return mxStr
+      ? `${repo}: starred ${mxStr} more than usual this week`
+      : `${repo}: unusual star activity detected`;
+  }
+  return `${repo}: ${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type} detected`;
+}
+
 function renderCard(r, i) {
-  const mult    = fmtMultiplier(r.baseline, r.observed, r.metric_name);
-  const ghUrl   = `https://github.com/${r.repo}`;
+  const mult      = fmtMultiplier(r.baseline, r.observed, r.metric_name);
   const detailUrl = `report.html?id=${r.id}`;
-  const highSev = r.z_score > 5;
-  const shortRepo = r.repo.split('/')[1];  // vllm, langchain, dbt-core
+  const highSev   = r.z_score > 5;
+  const headline  = makeHeadline(r);
 
   return `
     <a class="card${highSev ? ' high-severity' : ''}"
@@ -159,35 +178,17 @@ function renderCard(r, i) {
        data-type="${r.anomaly_type}"
        style="animation-delay:${i * 50}ms"
        role="listitem">
-      <div class="card-header">
-        <div class="card-meta">
-          <span class="badge badge-${r.anomaly_type}">${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type}</span>
-          <span class="badge badge-${r.confidence}">${r.confidence} confidence</span>
-          <span class="card-repo">
-            <a class="card-repo-link" href="${ghUrl}" target="_blank" rel="noopener"
-               onclick="event.stopPropagation()" aria-label="Open ${r.repo} on GitHub">
-              <svg width="12" height="12" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-              </svg>
-            </a>
-            ${shortRepo}
-          </span>
-        </div>
-        <span class="card-date">${fmtWindow(r.window_start, r.window_end)}</span>
-      </div>
 
-      ${mult ? `
-      <div class="card-metrics">
-        <span class="metric-observed${mult.up ? '' : ' metric-down'}">${mult.label}</span>
-        <span class="metric-detail">${mult.detail}</span>
-      </div>` : ''}
+      <div class="card-headline">${headline}</div>
 
       <div class="card-summary">${r.root_cause || r.summary || ''}</div>
 
       <div class="card-footer">
-        <div class="card-chips">
-          ${r.citations_count ? `<span class="chip">${r.citations_count} source${r.citations_count !== 1 ? 's' : ''}</span>` : ''}
-          <span class="chip">${r.duration_s}s</span>
+        <div class="card-meta-row">
+          <span class="badge badge-${r.anomaly_type}">${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type}</span>
+          <span class="badge badge-${r.confidence}">${r.confidence} confidence</span>
+          ${mult ? `<span class="metric-inline${mult.up ? '' : ' metric-down'}">${mult.label}</span>` : ''}
+          <span class="card-date">${fmtWindow(r.window_start, r.window_end)}</span>
         </div>
         <span class="view-link">View report →</span>
       </div>
@@ -206,11 +207,9 @@ async function init() {
   }
 
   // Stats
-  const repos    = [...new Set(reports.map(r => r.repo))];
-  const avgLat   = reports.length ? (reports.reduce((a, r) => a + r.duration_s, 0) / reports.length).toFixed(1) + 's' : '—';
-  document.getElementById('stat-reports').textContent  = reports.length;
-  document.getElementById('stat-repos').textContent    = repos.length;
-  document.getElementById('stat-latency').textContent  = avgLat;
+  const repos = [...new Set(reports.map(r => r.repo))];
+  document.getElementById('stat-reports').textContent = reports.length;
+  document.getElementById('stat-repos').textContent   = repos.length;
 
   // Populate repo filter
   const repoSel = document.getElementById('filter-repo');

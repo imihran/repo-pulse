@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>RepoPulse — Investigation Report</title>
-  <meta name="description" content="Autonomous investigation report for a GitHub repo health anomaly.">
   <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -13,12 +12,7 @@
   <div class="nav-inner">
     <a href="index.html" class="logo">REPOPULSE</a>
     <div class="nav-links">
-      <a href="https://github.com/devmish/repo-pulse" target="_blank" rel="noopener" class="nav-link">
-        <svg width="15" height="15" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-        </svg>
-        Source
-      </a>
+      <a href="https://github.com/devmish/repo-pulse" target="_blank" rel="noopener" class="nav-link">How it works ↗</a>
     </div>
   </div>
 </nav>
@@ -27,152 +21,221 @@
   <div class="feed-loading">Loading investigation…</div>
 </main>
 
+<!-- Metric tooltip panel (shared, moved by JS) -->
+<div class="metric-tooltip" id="metric-tooltip" hidden>
+  <div class="mtt-title" id="mtt-title"></div>
+  <div class="mtt-body" id="mtt-body"></div>
+</div>
+
 <footer class="footer">
   <div class="footer-inner">
     <span class="footer-logo">REPOPULSE</span>
     <span class="footer-sep">·</span>
-    <span>LangGraph + GPT-4o-mini + pgvector + Langfuse</span>
+    <span>LangGraph + GPT-4o-mini + pgvector</span>
   </div>
 </footer>
 
 <script>
-const ANOMALY_LABELS = {
-  pr_slowdown: 'PR Slowdown',
-  issue_spike:  'Issue Spike',
-  star_spike:   'Star Spike',
-};
-const METRIC_LABELS = {
-  pr_median_merge_hours: 'Median Merge Time',
-  issue_opened:          'Issue Open Rate',
-  star_count:            'Star Rate',
-};
-const METRIC_UNITS = {
-  pr_median_merge_hours: 'h',
-  issue_opened:          ' /day',
-  star_count:            ' /day',
+// ── Metric metadata ────────────────────────────────────────────────────────────
+const METRIC_INFO = {
+  pr_median_merge_hours: {
+    name: 'Median PR Merge Time',
+    unit: 'h',
+    what: 'How long it takes a pull request to go from opened to merged, measured in hours. Uses the <strong>median</strong> (middle value), not the mean, so one very old PR merging quietly doesn\'t distort the signal.',
+    how:  'For each PR merged during the detection window, RepoPulse computes <code>hours_open = merge_time − open_time</code>. It takes the 50th percentile (median) across all PRs merged that week, then compares it to the median of the prior 28 days using a MAD z-score.',
+    example: 'If 5 PRs merged in 4h, 8h, 12h, 48h, 800h — the median is <strong>12h</strong>. The mean would be 174h, dominated by the 800h outlier. Median correctly says "most PRs are merging in ~12h."',
+  },
+  issue_opened: {
+    name: 'Issue Open Rate',
+    unit: '/day',
+    what: 'The average number of new issues opened per day in the repository during the detection window.',
+    how:  'Counts <code>IssuesEvent</code> entries with <code>action = opened</code> from the GH Archive hourly data, then divides by 7 (the window length). Compares the 7-day average to the prior 28-day median.',
+    example: 'If 42 new issues were opened across a 7-day window, the rate is <strong>6 issues/day</strong>. If the prior month averaged 2/day, that\'s a 3× spike.',
+  },
+  star_count: {
+    name: 'Daily Stars',
+    unit: '/day',
+    what: 'How many people starred the repository per day on average. GitHub records each star as a <code>WatchEvent</code> in the public event stream.',
+    how:  'Counts <code>WatchEvent</code> entries from GH Archive for the 7-day window and divides by 7. Compares the 7-day average to the prior 28-day median using a MAD z-score.',
+    example: 'If the repo normally gets 80 stars/day but received 400/day for a week, that\'s a <strong>5× spike</strong> — likely triggered by a viral post or press coverage.',
+  },
 };
 
+const ANOMALY_LABELS = {
+  pr_slowdown: 'PR Slowdown',
+  issue_spike: 'Issue Spike',
+  star_spike:  'Star Spike',
+};
+
+const CITATION_LABELS = {
+  sql_result:     'Query',
+  artifact_chunk: 'GitHub PR',
+  release_note:   'Release',
+};
+
+// ── Formatters ─────────────────────────────────────────────────────────────────
 function fmt(value, metricName) {
-  const unit = METRIC_UNITS[metricName] || '';
+  const info = METRIC_INFO[metricName] || {};
+  const unit = info.unit || '';
   const v = parseFloat(value);
   return (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + unit;
 }
 
 function fmtWindow(start, end) {
-  const s = new Date(start);
-  const e = new Date(end);
+  const s = new Date(start), e = new Date(end);
   const opts = { month: 'short', day: 'numeric' };
   return `${s.toLocaleDateString('en-US', opts)} – ${e.toLocaleDateString('en-US', { ...opts, year: 'numeric' })}`;
 }
 
 function fmtDatetime(iso) {
   if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-const CITATION_LABELS = {
-  sql_result:     'Query Result',
-  artifact_chunk: 'GitHub PR',
-  release_note:   'Release Note',
-};
-function citationTypeLabel(type) {
-  return CITATION_LABELS[type] || type;
+function shortUrl(url) {
+  if (!url || url.startsWith('SQL')) return url || '';
+  try {
+    const u = new URL(url);
+    return u.pathname.replace(/^\//, '');  // strip leading slash
+  } catch { return url; }
 }
 
+// ── Tooltip ───────────────────────────────────────────────────────────────────
+function showTooltip(btn, metricName) {
+  const info = METRIC_INFO[metricName];
+  if (!info) return;
+
+  const tt = document.getElementById('metric-tooltip');
+  document.getElementById('mtt-title').textContent = info.name;
+  document.getElementById('mtt-body').innerHTML = `
+    <p><strong>What it measures:</strong> ${info.what}</p>
+    <p><strong>How it's computed:</strong> ${info.how}</p>
+    <p class="mtt-example"><strong>Example:</strong> ${info.example}</p>
+  `;
+  tt.hidden = false;
+
+  const r = btn.getBoundingClientRect();
+  tt.style.top  = (window.scrollY + r.bottom + 8) + 'px';
+  tt.style.left = Math.min(r.left, window.innerWidth - 360) + 'px';
+}
+
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.metric-info-btn');
+  const tt  = document.getElementById('metric-tooltip');
+  if (btn) {
+    e.stopPropagation();
+    if (!tt.hidden && tt.dataset.metric === btn.dataset.metric) {
+      tt.hidden = true;
+    } else {
+      tt.dataset.metric = btn.dataset.metric;
+      showTooltip(btn, btn.dataset.metric);
+    }
+  } else if (!e.target.closest('#metric-tooltip')) {
+    tt.hidden = true;
+  }
+});
+
+// ── Render ────────────────────────────────────────────────────────────────────
 function renderReport(r) {
-  const ghUrl   = `https://github.com/${r.repo}`;
-  const metricLabel = METRIC_LABELS[r.metric_name] || r.metric_name;
+  const ghUrl      = `https://github.com/${r.repo}`;
+  const info       = METRIC_INFO[r.metric_name] || {};
+  const metricName = info.name || r.metric_name;
+  const mult       = r.baseline > 0 ? (r.observed / r.baseline) : 0;
+  const multLabel  = mult >= 2   ? `${mult.toFixed(0)}×`
+                   : mult > 1.05 ? `+${Math.round((mult-1)*100)}%`
+                   : mult < 0.5  ? `${(1/mult).toFixed(0)}× less`
+                   : '';
 
+  // Evidence
   const evidenceHtml = (r.evidence && r.evidence.length)
-    ? `<ol class="evidence-list">
-        ${r.evidence.map((e, i) => `
-          <li class="evidence-item">
-            <span class="evidence-num">${String(i + 1).padStart(2, '0')}</span>
-            <span>${e}</span>
-          </li>`).join('')}
-       </ol>`
-    : '<p style="color:var(--text-3);font-size:13px;font-family:var(--font-mono)">No evidence bullets recorded.</p>';
+    ? r.evidence.map((e, i) => `
+        <div class="ev-row">
+          <span class="ev-num">${i + 1}</span>
+          <span class="ev-text">${e}</span>
+        </div>`).join('')
+    : '<p class="dim-text">No evidence recorded.</p>';
 
+  // Citations
   const citationsHtml = (r.citations && r.citations.length)
-    ? `<div class="citations-grid">
-        ${r.citations.map(c => `
-          <div class="citation-card">
-            <div class="citation-top">
-              <span class="badge badge-${c.type}">${citationTypeLabel(c.type)}</span>
-              ${c.url && !c.url.startsWith('SQL')
-                ? `<a class="citation-url" href="${c.url}" target="_blank" rel="noopener">${c.url}</a>`
-                : `<span class="citation-url" style="color:var(--text-3)">${c.url || ''}</span>`}
-            </div>
-            ${c.excerpt ? `<div class="citation-excerpt">"${c.excerpt}"</div>` : ''}
-          </div>`).join('')}
-       </div>`
-    : '<p style="color:var(--text-3);font-size:13px;font-family:var(--font-mono)">No citations recorded for this investigation.</p>';
+    ? r.citations.map(c => {
+        const label   = CITATION_LABELS[c.type] || c.type;
+        const isLink  = c.url && !c.url.startsWith('SQL');
+        const urlPart = isLink
+          ? `<a class="cit-url" href="${c.url}" target="_blank" rel="noopener">${shortUrl(c.url)}</a>`
+          : `<span class="cit-url cit-sql">${c.url || ''}</span>`;
+        const excerpt = c.excerpt ? `<span class="cit-excerpt">${c.excerpt.slice(0, 100)}</span>` : '';
+        return `
+          <div class="cit-row">
+            <span class="badge badge-${c.type}">${label}</span>
+            ${urlPart}
+            ${excerpt}
+          </div>`;
+      }).join('')
+    : '<p class="dim-text">No sources recorded.</p>';
 
   return `
     <a href="index.html" class="back-link">← Back to feed</a>
 
-    <div class="report-header">
-      <div class="report-header-top">
+    <div class="rpt-header">
+      <div class="rpt-title-row">
+        <a href="${ghUrl}" target="_blank" rel="noopener" class="rpt-repo-link">
+          ${r.repo} ↗
+        </a>
+        <span class="rpt-meta">${fmtWindow(r.window_start, r.window_end)} · ${fmtDatetime(r.created_at)}</span>
+      </div>
+      <div class="rpt-badges">
         <span class="badge badge-${r.anomaly_type}">${ANOMALY_LABELS[r.anomaly_type] || r.anomaly_type}</span>
         <span class="badge badge-${r.confidence}">${r.confidence} confidence</span>
       </div>
-      <div class="report-repo">
-        ${r.repo}
-        <a href="${ghUrl}" target="_blank" rel="noopener" aria-label="Open on GitHub">
-          <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-          </svg>
-        </a>
-      </div>
-      <div class="report-window">${fmtWindow(r.window_start, r.window_end)} · Investigated ${fmtDatetime(r.created_at)}</div>
     </div>
 
-    <div class="anomaly-panel">
-      <div class="anomaly-side baseline">
-        <span class="anomaly-label">Normal (prior 28 days)</span>
-        <span class="anomaly-value">${fmt(r.baseline, r.metric_name)}</span>
-        <span class="anomaly-sub">${metricLabel} median</span>
+    <div class="metric-strip">
+      <div class="ms-block ms-baseline">
+        <div class="ms-label">Normal (prior 28 days)</div>
+        <div class="ms-value">${fmt(r.baseline, r.metric_name)}</div>
       </div>
-      <div class="anomaly-arrow">
-        <span class="arrow-icon">→</span>
-        ${r.baseline > 0 ? `<span class="anomaly-mult">${(r.observed / r.baseline).toFixed(0)}×</span>` : ''}
-        <span class="anomaly-zscore">z = ${r.z_score.toFixed(2)}</span>
+      <div class="ms-arrow">
+        ${multLabel ? `<span class="ms-mult">${multLabel}</span>` : ''}
+        <span class="ms-arrow-icon">→</span>
       </div>
-      <div class="anomaly-side observed">
-        <span class="anomaly-label">During anomaly (last 7d)</span>
-        <span class="anomaly-value">${fmt(r.observed, r.metric_name)}</span>
-        <span class="anomaly-sub">${metricLabel}</span>
+      <div class="ms-block ms-observed">
+        <div class="ms-label">During anomaly (last 7 days)</div>
+        <div class="ms-value">${fmt(r.observed, r.metric_name)}</div>
+      </div>
+      <div class="ms-meta">
+        <span class="ms-name">${metricName}</span>
+        <button class="metric-info-btn" data-metric="${r.metric_name}" aria-label="How ${metricName} is measured">ⓘ</button>
+        <span class="ms-zscore">z = ${r.z_score.toFixed(2)}</span>
       </div>
     </div>
 
-    <div class="report-section">
-      <div class="section-label">Root Cause</div>
-      <p class="root-cause-text">${r.root_cause || r.summary || 'No root cause recorded.'}</p>
+    <div class="rpt-section">
+      <div class="rpt-section-label">Root Cause</div>
+      <p class="rpt-root-cause">${r.root_cause || r.summary || ''}</p>
     </div>
 
-    <div class="report-section">
-      <div class="section-label">Evidence</div>
-      ${evidenceHtml}
+    <div class="rpt-section">
+      <div class="rpt-section-label">Evidence</div>
+      <div class="ev-list">${evidenceHtml}</div>
     </div>
 
-    <div class="report-section">
-      <div class="section-label">Citations — ${(r.citations || []).length} source${(r.citations || []).length !== 1 ? 's' : ''}</div>
-      ${citationsHtml}
+    <div class="rpt-section">
+      <div class="rpt-section-label">Sources <span class="dim-count">${(r.citations || []).length}</span></div>
+      <div class="cit-list">${citationsHtml}</div>
     </div>
 
     ${r.limitations ? `
-    <div class="report-section">
-      <div class="section-label">Limitations</div>
-      <div class="limitations-text">${r.limitations}</div>
-    </div>` : ''}
+    <details class="rpt-limitations">
+      <summary class="rpt-limitations-toggle">Limitations</summary>
+      <p class="rpt-limitations-text">${r.limitations}</p>
+    </details>` : ''}
 
-    <div class="report-footer-strip">
-      <span>Investigated by RepoPulse</span>
+    <div class="rpt-footer">
+      <span>RepoPulse</span>
       <span class="rfooter-sep">·</span>
       <span>LangGraph + GPT-4o-mini</span>
       <span class="rfooter-sep">·</span>
-      <span>${r.tool_calls} queries in ${r.duration_s}s</span>
+      <span>${r.tool_calls} queries · ${r.duration_s}s</span>
     </div>
   `;
 }
@@ -183,7 +246,7 @@ async function init() {
   const main   = document.getElementById('report-main');
 
   if (!id) {
-    main.innerHTML = '<div class="feed-empty">No report ID specified. <a href="index.html" style="color:var(--amber)">← Back to feed</a></div>';
+    main.innerHTML = '<div class="feed-empty">No report ID. <a href="index.html" style="color:var(--amber)">← Back</a></div>';
     return;
   }
 
@@ -192,12 +255,12 @@ async function init() {
     const res = await fetch(`data/reports/${id}.json`);
     if (!res.ok) throw new Error('not found');
     report = await res.json();
-  } catch (e) {
-    main.innerHTML = `<div class="feed-empty">Report #${id} not found. <a href="index.html" style="color:var(--amber)">← Back to feed</a></div>`;
+  } catch {
+    main.innerHTML = `<div class="feed-empty">Report #${id} not found. <a href="index.html" style="color:var(--amber)">← Back</a></div>`;
     return;
   }
 
-  document.title = `RepoPulse — ${report.repo} ${ANOMALY_LABELS[report.anomaly_type] || report.anomaly_type}`;
+  document.title = `RepoPulse — ${report.repo} ${ANOMALY_LABELS[report.anomaly_type] || ''}`;
   main.innerHTML = renderReport(report);
 }
 

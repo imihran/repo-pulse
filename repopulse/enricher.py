@@ -27,11 +27,13 @@ import time
 from datetime import date
 
 import requests
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from repopulse.db import get_connection
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GH_BASE      = "https://api.github.com"
@@ -135,12 +137,38 @@ def get_pr_numbers(conn, repo_name: str, start: date, end: date, limit: int) -> 
             WHERE repo_name = %s
               AND type = 'PullRequestEvent'
               AND created_at::date BETWEEN %s AND %s
+              AND (payload->'pull_request'->>'number') IS NOT NULL
             ORDER BY pr_number DESC
             LIMIT %s
             """,
             (repo_name, start, end, limit),
         )
-        return [row[0] for row in cur.fetchall()]
+        return [row[0] for row in cur.fetchall() if row[0] is not None]
+
+
+def fetch_merged_prs(owner: str, repo: str, start: date, end: date, limit: int) -> list[int]:
+    """
+    Use GitHub search API to find PRs merged in the given date range.
+
+    Complements get_pr_numbers() for PRs opened before our events window — e.g.
+    a PR open for 373 days that only appears as a close event in the events table
+    would be found by get_pr_numbers(), but this call also works when the events
+    table is narrower than the PR's lifetime.
+
+    Search API rate limit: 30 req/min (vs 5000/hr for REST). Use sparingly —
+    one call per anomaly window is fine.
+    """
+    data = gh_get(
+        f"{GH_BASE}/search/issues",
+        params={
+            "q": f"repo:{owner}/{repo} type:pr merged:{start}..{end}",
+            "sort": "updated",
+            "per_page": min(limit, 100),
+        },
+    )
+    if not data:
+        return []
+    return [item["number"] for item in data.get("items", [])]
 
 
 def upsert_artifact(conn, repo_name: str, pr: dict, full_text: str) -> int:
@@ -196,9 +224,12 @@ def main() -> None:
     start       = date.fromisoformat(args.start)
     end         = date.fromisoformat(args.end)
 
-    conn       = get_connection()
-    pr_numbers = get_pr_numbers(conn, args.repo, start, end, args.limit)
-    print(f"Found {len(pr_numbers)} PRs in events for {args.repo} ({start} → {end})")
+    conn = get_connection()
+    from_events = get_pr_numbers(conn, args.repo, start, end, args.limit)
+    from_search = fetch_merged_prs(owner, repo, start, end, args.limit)
+    pr_numbers  = sorted(set(from_events) | set(from_search), reverse=True)[:args.limit]
+    print(f"Found {len(pr_numbers)} PRs for {args.repo} ({start} → {end})"
+          f"  [events={len(from_events)}, search={len(from_search)}]")
 
     for number in pr_numbers:
         print(f"  PR #{number} ... ", end="", flush=True)

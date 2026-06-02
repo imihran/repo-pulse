@@ -39,7 +39,7 @@ RESULTS_PATH = Path("eval/results.json")
 # Thresholds for pass/fail in the summary
 CITATION_COVERAGE_THRESHOLD = 0.5   # at least 50% of expected URLs cited
 LATENCY_THRESHOLD_S         = 90.0
-MAX_TOOL_CALLS              = 6
+MAX_TOOL_CALLS              = 8
 
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
@@ -253,8 +253,27 @@ def main() -> None:
             report = InvestigationReport(**raw)
         else:
             print(f"  running agent on anomaly_id={anomaly_id} ...")
-            t0     = time.time()
-            report = investigate(anomaly_id)
+            t0 = time.time()
+            try:
+                report = investigate(anomaly_id)
+            except Exception as e:
+                duration = time.time() - t0
+                print(f"  FAILED ({e.__class__.__name__}: {e})")
+                results.append({
+                    "case_id":           case["id"],
+                    "repo":              case["repo"],
+                    "anomaly_type":      case["anomaly_type"],
+                    "citation_coverage": None,
+                    "has_citations":     False,
+                    "budget_ok":         False,
+                    "latency_ok":        duration <= LATENCY_THRESHOLD_S,
+                    "confidence_match":  False,
+                    "confidence":        "error",
+                    "tool_calls":        0,
+                    "latency_s":         round(duration, 1),
+                    "summary":           f"ERROR: {e}",
+                })
+                continue
             duration   = time.time() - t0
             # Fetch the tool_calls count from the freshly stored report
             stored = get_latest_report(conn, anomaly_id)

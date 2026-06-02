@@ -36,6 +36,9 @@ data/
 *.sqlite
 pgdata/
 
+# Airflow metadata (SQLite DB, logs, plugins — local only)
+.airflow/
+
 # Tooling
 .pytest_cache/
 .ruff_cache/

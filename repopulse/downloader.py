@@ -19,8 +19,9 @@ from pathlib import Path
 
 import requests
 
-DATA_DIR  = Path("data")
-RAW_DIR   = DATA_DIR / "raw"
+PROJECT_ROOT  = Path(__file__).resolve().parent.parent
+DATA_DIR      = PROJECT_ROOT / "data"
+RAW_DIR       = DATA_DIR / "raw"
 
 # Manifest lives in data/ and is shared with processor.py
 MANIFEST_PATH = DATA_DIR / "manifest.json"
@@ -75,27 +76,19 @@ def download_hour(dt: date, hour: int, retries: int = 3) -> bool:
                 raise  # give up after all retries
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Download GH Archive files to data/raw/")
-    parser.add_argument("--start", required=True, metavar="YYYY-MM-DD")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--end",  metavar="YYYY-MM-DD")
-    group.add_argument("--days", type=int)
-    args = parser.parse_args()
-
-    start = date.fromisoformat(args.start)
-    end   = date.fromisoformat(args.end) if args.end else (
-            start + timedelta(days=args.days - 1) if args.days else date.today()
-    )
-
-    manifest = load_manifest(MANIFEST_PATH)
+def download_range(start: date, end: date) -> int:
+    """
+    Download all hourly GH Archive files for start..end inclusive.
+    Idempotent: skips hours that are already on disk.
+    Returns the number of files actually downloaded.
+    """
+    manifest   = load_manifest(MANIFEST_PATH)
     downloaded = 0
 
     for dt, hour in iter_hours(start, end):
         key  = manifest_key(dt, hour)
         dest = raw_path(dt, hour)
 
-        # Skip if already downloaded and file is still on disk
         if manifest.get(key, {}).get("downloaded") and dest.exists():
             print(f"  skip  {key}")
             continue
@@ -113,6 +106,23 @@ def main() -> None:
         size_mb = dest.stat().st_size / 1_000_000
         print(f"done ({size_mb:.0f} MB)")
 
+    return downloaded
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Download GH Archive files to data/raw/")
+    parser.add_argument("--start", required=True, metavar="YYYY-MM-DD")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--end",  metavar="YYYY-MM-DD")
+    group.add_argument("--days", type=int)
+    args = parser.parse_args()
+
+    start = date.fromisoformat(args.start)
+    end   = date.fromisoformat(args.end) if args.end else (
+            start + timedelta(days=args.days - 1) if args.days else date.today()
+    )
+
+    downloaded = download_range(start, end)
     print(f"\nDone: {downloaded} files downloaded to {RAW_DIR}/")
 
 

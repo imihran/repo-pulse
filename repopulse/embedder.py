@@ -11,8 +11,8 @@ Chunking is necessary because embedding models have token limits (~8k for
 text-embedding-3-small). A long PR with many comments must be split before
 it can be embedded. Overlapping chunks prevent context loss at boundaries.
 
-Limitation (documented): this is vector-only retrieval. BM25/hybrid search
-is deferred to a later slice — documented as a known limitation.
+Retrieval: vector embeddings feed the hybrid search in agent.py, which
+combines these vectors with PostgreSQL FTS (BM25) via Reciprocal Rank Fusion.
 
 Usage:
     python -m repopulse.embedder --repo langchain-ai/langchain
@@ -22,11 +22,13 @@ Usage:
 import argparse
 
 from openai import OpenAI
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from repopulse.db import get_connection
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMS  = 1536   # must match the vector(1536) column in artifact_chunks

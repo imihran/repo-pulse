@@ -16,9 +16,15 @@ dependencies = [
     "pytest",             # test runner for guardrail tests
 ]
 
+[project.optional-dependencies]
+# Install Airflow alongside repopulse for the scheduled pipeline.
+# Use the constraints file to avoid resolver conflicts (Airflow pins many deps).
+# See: make airflow-init
+airflow = ["apache-airflow>=2.9"]
+
 [tool.setuptools.packages.find]
 # Without this, setuptools would also try to package infra/, memory/, etc.
-include = ["repopulse*"]
+include = ["repopulse*", "dags*"]
 
 [build-system]
 requires = ["setuptools>=42"]

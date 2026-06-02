@@ -26,7 +26,8 @@ WATCHED_REPOS = {
     "dbt-labs/dbt-core",
 }
 
-DATA_DIR      = Path("data")
+PROJECT_ROOT  = Path(__file__).resolve().parent.parent
+DATA_DIR      = PROJECT_ROOT / "data"
 RAW_DIR       = DATA_DIR / "raw"
 FILTERED_DIR  = DATA_DIR / "filtered"
 MANIFEST_PATH = DATA_DIR / "manifest.json"
@@ -94,21 +95,12 @@ def upsert_events(conn, events: list[dict]) -> None:
     conn.commit()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Process downloaded GH Archive files into Postgres")
-    parser.add_argument("--start", required=True, metavar="YYYY-MM-DD")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--end",  metavar="YYYY-MM-DD")
-    group.add_argument("--days", type=int)
-    parser.add_argument("--delete-raw", action="store_true",
-                        help="Delete raw .json.gz after successful ingestion (saves ~55 GB for 60 days)")
-    args = parser.parse_args()
-
-    start = date.fromisoformat(args.start)
-    end   = date.fromisoformat(args.end) if args.end else (
-            start + timedelta(days=args.days - 1) if args.days else date.today()
-    )
-
+def process_range(start: date, end: date, delete_raw: bool = False) -> int:
+    """
+    Filter and ingest all GH Archive hours for start..end into Postgres.
+    Idempotent: skips hours already marked ingested in the manifest.
+    Returns total events ingested.
+    """
     manifest = load_manifest(MANIFEST_PATH)
     conn     = get_connection()
     total    = 0
@@ -130,16 +122,35 @@ def main() -> None:
         save_filtered(events, dt, hour)
         upsert_events(conn, events)
 
-        manifest.setdefault(key, {})["ingested"]    = True
+        manifest.setdefault(key, {})["ingested"] = True
         manifest[key]["events_kept"] = len(events)
         save_manifest(MANIFEST_PATH, manifest)
         total += len(events)
         print(f"{len(events)} kept")
 
-        if args.delete_raw:
+        if delete_raw:
             src.unlink()
 
     conn.close()
+    return total
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Process downloaded GH Archive files into Postgres")
+    parser.add_argument("--start", required=True, metavar="YYYY-MM-DD")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--end",  metavar="YYYY-MM-DD")
+    group.add_argument("--days", type=int)
+    parser.add_argument("--delete-raw", action="store_true",
+                        help="Delete raw .json.gz after successful ingestion (saves ~55 GB for 60 days)")
+    args = parser.parse_args()
+
+    start = date.fromisoformat(args.start)
+    end   = date.fromisoformat(args.end) if args.end else (
+            start + timedelta(days=args.days - 1) if args.days else date.today()
+    )
+
+    total = process_range(start, end, delete_raw=args.delete_raw)
     print(f"\nDone: {total} total events ingested.")
 
 

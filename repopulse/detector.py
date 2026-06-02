@@ -66,6 +66,77 @@ def aggregate_metrics(conn, start_date: date, end_date: date) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
+            -- GH Archive changed its payload format: newer events only include
+            -- pull_request.id, not the full PR object. We handle both formats:
+            --   Old (pre-2026): merged flag and timestamps in pull_request object
+            --   New (2026+):    only pull_request.id; use event timestamps + self-join
+            --                   for cycle time; treat action=closed as merged
+
+            WITH pr_cycles AS (
+                -- Compute PR cycle time (open → close) by joining opened and
+                -- closed events on the same PR number within the same repo.
+                -- This works for both old and new payload formats.
+                SELECT
+                    c.repo_name,
+                    (c.created_at AT TIME ZONE 'UTC')::date AS close_date,
+                    PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY EXTRACT(EPOCH FROM (c.created_at - o.created_at)) / 3600.0
+                    ) AS median_hours
+                FROM events c
+                JOIN events o
+                  ON  o.repo_name           = c.repo_name
+                  AND o.payload->>'number'  = c.payload->>'number'
+                  AND o.type                = 'PullRequestEvent'
+                  AND o.payload->>'action'  = 'opened'
+                  AND o.created_at          < c.created_at
+                WHERE c.type               = 'PullRequestEvent'
+                  AND c.payload->>'action' = 'closed'
+                  AND (c.created_at AT TIME ZONE 'UTC')::date
+                      BETWEEN %(start_date)s AND %(end_date)s
+                GROUP BY c.repo_name, (c.created_at AT TIME ZONE 'UTC')::date
+            ),
+            daily AS (
+                SELECT
+                    repo_name,
+                    (created_at AT TIME ZONE 'UTC')::date AS date,
+
+                    COUNT(*) FILTER (WHERE type = 'WatchEvent')
+                        AS star_count,
+
+                    COUNT(*) FILTER (WHERE type = 'ForkEvent')
+                        AS fork_count,
+
+                    COUNT(*) FILTER (WHERE type = 'IssuesEvent'
+                                       AND payload->>'action' = 'opened')
+                        AS issue_opened,
+
+                    COUNT(*) FILTER (WHERE type = 'IssuesEvent'
+                                       AND payload->>'action' = 'closed')
+                        AS issue_closed,
+
+                    COUNT(*) FILTER (WHERE type = 'PullRequestEvent'
+                                       AND payload->>'action' = 'opened')
+                        AS pr_opened,
+
+                    -- Old format: count only confirmed merges.
+                    -- New format: merged flag absent, so count all closes as merges
+                    -- (best available proxy when payload is truncated).
+                    COUNT(*) FILTER (WHERE type = 'PullRequestEvent'
+                                       AND payload->>'action' = 'closed'
+                                       AND COALESCE(
+                                           (payload->'pull_request'->>'merged')::boolean,
+                                           true  -- new format: assume closed = merged
+                                       ))
+                        AS pr_merged,
+
+                    COUNT(*) FILTER (WHERE type = 'PushEvent')
+                        AS commit_count
+
+                FROM events
+                WHERE (created_at AT TIME ZONE 'UTC')::date
+                      BETWEEN %(start_date)s AND %(end_date)s
+                GROUP BY repo_name, (created_at AT TIME ZONE 'UTC')::date
+            )
             INSERT INTO repo_metrics_daily (
                 repo_name, date,
                 star_count, fork_count,
@@ -74,54 +145,20 @@ def aggregate_metrics(conn, start_date: date, end_date: date) -> None:
                 commit_count
             )
             SELECT
-                repo_name,
-                (created_at AT TIME ZONE 'UTC')::date AS date,
-
-                COUNT(*) FILTER (WHERE type = 'WatchEvent')
-                    AS star_count,
-
-                COUNT(*) FILTER (WHERE type = 'ForkEvent')
-                    AS fork_count,
-
-                COUNT(*) FILTER (WHERE type = 'IssuesEvent'
-                                   AND payload->>'action' = 'opened')
-                    AS issue_opened,
-
-                COUNT(*) FILTER (WHERE type = 'IssuesEvent'
-                                   AND payload->>'action' = 'closed')
-                    AS issue_closed,
-
-                COUNT(*) FILTER (WHERE type = 'PullRequestEvent'
-                                   AND payload->>'action' = 'opened')
-                    AS pr_opened,
-
-                -- A PR is "merged" when action=closed AND merged=true.
-                -- The merged flag lives inside the nested pull_request object.
-                COUNT(*) FILTER (WHERE type = 'PullRequestEvent'
-                                   AND payload->>'action' = 'closed'
-                                   AND (payload->'pull_request'->>'merged')::boolean)
-                    AS pr_merged,
-
-                -- Median merge time: robust to stale PRs merged in quiet weeks.
-                -- PERCENTILE_CONT(0.5) is SQL's median. One stale PR that was
-                -- open 300 days moves the mean dramatically but barely moves
-                -- the median if most PRs close quickly.
-                PERCENTILE_CONT(0.5) WITHIN GROUP (
-                    ORDER BY EXTRACT(EPOCH FROM (
-                        (payload->'pull_request'->>'merged_at')::timestamptz
-                        - (payload->'pull_request'->>'created_at')::timestamptz
-                    )) / 3600.0
-                ) FILTER (WHERE type = 'PullRequestEvent'
-                           AND payload->>'action' = 'closed'
-                           AND (payload->'pull_request'->>'merged')::boolean)
-                    AS pr_median_merge_hours,
-
-                COUNT(*) FILTER (WHERE type = 'PushEvent')
-                    AS commit_count
-
-            FROM events
-            WHERE (created_at AT TIME ZONE 'UTC')::date BETWEEN %(start_date)s AND %(end_date)s
-            GROUP BY repo_name, (created_at AT TIME ZONE 'UTC')::date
+                d.repo_name,
+                d.date,
+                d.star_count,
+                d.fork_count,
+                d.issue_opened,
+                d.issue_closed,
+                d.pr_opened,
+                d.pr_merged,
+                pc.median_hours   AS pr_median_merge_hours,
+                d.commit_count
+            FROM daily d
+            LEFT JOIN pr_cycles pc
+              ON pc.repo_name  = d.repo_name
+             AND pc.close_date = d.date
 
             ON CONFLICT (repo_name, date) DO UPDATE SET
                 star_count            = EXCLUDED.star_count,

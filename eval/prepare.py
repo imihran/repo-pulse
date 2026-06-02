@@ -21,7 +21,7 @@ from pathlib import Path
 from repopulse.db import get_connection
 from repopulse.enricher import (
     GITHUB_TOKEN, fetch_comments, fetch_pr,
-    build_text, get_pr_numbers, upsert_artifact,
+    build_text, get_pr_numbers, fetch_merged_prs, upsert_artifact,
 )
 from repopulse.embedder import get_unenriched, embed_batch, store_chunks, chunk_text
 from openai import OpenAI
@@ -83,11 +83,16 @@ def enrich_window(case: dict, conn, dry_run: bool) -> int:
     owner, repo = case["repo"].split("/")
     start = date.fromisoformat(case["window_start"])
     end   = date.fromisoformat(case["window_end"])
-    pr_numbers = get_pr_numbers(conn, case["repo"], start, end, limit=30)
+
+    from_events = get_pr_numbers(conn, case["repo"], start, end, limit=30)
+    from_search = fetch_merged_prs(owner, repo, start, end, limit=30) if GITHUB_TOKEN else []
+    pr_numbers  = sorted(set(from_events) | set(from_search), reverse=True)[:30]
 
     if not pr_numbers:
-        print(f"    no PRs found in events for this window")
+        print(f"    no PRs found in events or search for this window")
         return 0
+
+    print(f"    {len(pr_numbers)} PRs  [events={len(from_events)}, search={len(from_search)}]")
 
     if dry_run:
         print(f"    would enrich {len(pr_numbers)} PRs")

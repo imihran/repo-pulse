@@ -1,6 +1,6 @@
 # Makefile — convenience shortcuts for the local dev workflow.
 # Run any target with: make <target>   e.g. `make up`
-.PHONY: up down psql logs migrate venv download process detect enrich embed investigate eval-prepare eval test export serve
+.PHONY: up down psql logs migrate migrate-bm25 venv download process detect enrich embed investigate eval-prepare eval test export serve airflow-init airflow-up airflow-trigger
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +27,11 @@ logs:
 # use IF NOT EXISTS or ON CONFLICT DO NOTHING.
 migrate:
 	docker compose exec -T db psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} < infra/02_schema.sql
+
+# Add GIN index for BM25/FTS hybrid retrieval (Stage 10, Slice 10).
+# Run once after the schema is applied. Safe to re-run (IF NOT EXISTS).
+migrate-bm25:
+	docker compose exec -T db psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} < infra/05_add_bm25_index.sql
 
 # ── Python ────────────────────────────────────────────────────────────────────
 
@@ -91,3 +96,37 @@ serve:
 #   make eval ARGS="--skip-existing"   # re-use already-stored reports
 eval:
 	python -m eval.evaluator $(ARGS)
+
+# ── Airflow ────────────────────────────────────────────────────────────────────
+
+# One-time setup: install Airflow, initialise the metadata DB, and create admin user.
+# Run once after `make venv && source .venv/bin/activate`.
+# The constraints file pins transitive deps to avoid resolver conflicts.
+airflow-init:
+	pip install "apache-airflow>=2.9" \
+	    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.9.3/constraints-3.10.txt"
+	AIRFLOW_HOME=$(PWD)/.airflow \
+	AIRFLOW__CORE__DAGS_FOLDER=$(PWD)/dags \
+	AIRFLOW__CORE__LOAD_EXAMPLES=False \
+	  airflow db migrate
+	AIRFLOW_HOME=$(PWD)/.airflow \
+	  airflow users create \
+	    --username admin --password admin \
+	    --firstname Admin --lastname User \
+	    --role Admin --email admin@local 2>/dev/null || true
+
+# Start Airflow standalone (scheduler + webserver) in the foreground.
+# UI is at http://localhost:8080  (admin / admin).
+# Ctrl-C to stop.
+airflow-up:
+	AIRFLOW_HOME=$(PWD)/.airflow \
+	AIRFLOW__CORE__DAGS_FOLDER=$(PWD)/dags \
+	AIRFLOW__CORE__LOAD_EXAMPLES=False \
+	  airflow standalone
+
+# Manually trigger one pipeline run for a specific date (for testing).
+#   make airflow-trigger DATE=2025-04-30
+airflow-trigger:
+	AIRFLOW_HOME=$(PWD)/.airflow \
+	  airflow dags trigger repopulse_daily --run-id manual__$(DATE) \
+	    --conf '{"ds": "$(DATE)"}'

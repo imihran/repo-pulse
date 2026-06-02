@@ -17,7 +17,7 @@ from pathlib import Path
 
 from repopulse.db import get_connection
 
-WEB_DATA_DIR = Path("web/data")
+WEB_DATA_DIR = Path(__file__).resolve().parent.parent / "web" / "data"
 
 
 def decimal_default(obj):

@@ -8,7 +8,10 @@
     "window_end": "2025-04-30",
     "expected_evidence_urls": [
       "https://github.com/langchain-ai/langchain/pull/31069",
-      "https://github.com/langchain-ai/langchain/pull/31060"
+      "https://github.com/langchain-ai/langchain/pull/31060",
+      "https://github.com/langchain-ai/langchain/pull/30300",
+      "https://github.com/langchain-ai/langchain/pull/30444",
+      "https://github.com/langchain-ai/langchain/pull/30514"
     ],
     "accepted_explanation": "Repository restructuring (langchain-community moving to a separate repo) combined with the release of langchain-core v0.3.56 increased review complexity and slowed PR merges during this window.",
     "expected_confidences": ["medium", "high"],
@@ -27,7 +30,9 @@
     "expected_evidence_urls": [
       "https://github.com/langchain-ai/langchain/pull/29334",
       "https://github.com/langchain-ai/langchain/pull/29335",
-      "https://github.com/langchain-ai/langchain/pull/29381"
+      "https://github.com/langchain-ai/langchain/pull/29381",
+      "https://github.com/langchain-ai/langchain/pull/30423",
+      "https://github.com/langchain-ai/langchain/pull/30652"
     ],
     "accepted_explanation": "A batch of 'Add ruff rules' PRs opened in January 2025 were merged together in a coordinated backlog cleanup event (March 31 – April 4). The median was elevated by these long-lived PRs merging in a cluster.",
     "expected_confidences": ["medium", "high"],
@@ -121,7 +126,9 @@
     "window_start": "2025-04-13",
     "window_end": "2025-04-19",
     "expected_evidence_urls": [
-      "https://github.com/vllm-project/vllm/pull/10546"
+      "https://github.com/vllm-project/vllm/pull/10546",
+      "https://github.com/vllm-project/vllm/pull/16860",
+      "https://github.com/vllm-project/vllm/pull/16848"
     ],
     "accepted_explanation": "A batch of long-lived PRs (some open since November 2024) were merged during this window alongside normal volume. The median was elevated but the typical PR was still merging within ~25 hours — this is a mixed backlog-clearing signal rather than a repo-wide slowdown.",
     "expected_confidences": ["medium", "low"],
@@ -138,7 +145,9 @@
     "window_start": "2025-03-16",
     "window_end": "2025-03-22",
     "expected_evidence_urls": [
-      "https://github.com/langchain-ai/langchain/pull/28972"
+      "https://github.com/langchain-ai/langchain/pull/28972",
+      "https://github.com/langchain-ai/langchain/pull/30413",
+      "https://github.com/langchain-ai/langchain/pull/30415"
     ],
     "accepted_explanation": "PR #28972 (open since Dec 30, 2024, merged Mar 17) was a major outlier in the mean-based metric. With median, this window shows a weaker signal. Demonstrates the importance of using median over mean for this metric.",
     "expected_confidences": ["low", "medium"],
@@ -163,5 +172,80 @@
     "baseline_value": 43.1,
     "observed_value": 2997.0,
     "limitation_notes": "Consistency check — same window as dbt_pr_slowdown_2025_04_12."
+  },
+  {
+    "id": "vllm_star_spike_2025_04_11",
+    "repo": "vllm-project/vllm",
+    "anomaly_type": "star_spike",
+    "metric_name": "star_count",
+    "window_start": "2025-04-11",
+    "window_end": "2025-04-17",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Sharp star spike on April 11–12 (250 and 190 stars respectively, ~2–3x baseline of 92/day) following the v0.8.3 release on April 6 and just before v0.8.4 on April 14. Likely driven by weekend social media coverage (HN or Reddit) of the new release. Fork and issue counts also elevated on Apr 11.",
+    "expected_confidences": ["medium", "low"],
+    "z_score": 1.89,
+    "baseline_value": 92.0,
+    "observed_value": 146.7,
+    "limitation_notes": "z-score below the 3.5 detection threshold; the spike is real but within the natural variance of a high-activity repo. Specific external coverage source is not available in event data — agent should correlate with release events."
+  },
+  {
+    "id": "vllm_pr_slowdown_2025_04_20",
+    "repo": "vllm-project/vllm",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-20",
+    "window_end": "2025-04-26",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Moderate PR merge time elevation (40h median vs 19h baseline). vllm typically has fast turnaround; this week-long slowdown likely reflects reduced reviewer bandwidth after the v0.8.3/v0.8.4 release burst activity (Apr 6–14) or normal weekly variation.",
+    "expected_confidences": ["low", "medium"],
+    "z_score": 2.53,
+    "baseline_value": 19.3,
+    "observed_value": 40.1,
+    "limitation_notes": "z-score below 3.5 detection threshold. Root cause is ambiguous — could be normal variation. Expected evidence URLs not pre-identified."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_04_07",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-07",
+    "window_end": "2025-04-13",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Strong PR merge time anomaly (23h median vs 3h baseline, z=7.35) in the window immediately following the backlog-cleanup batch (Mar 31–Apr 5). Review load elevated as the repo began the langchain-community restructuring. Part of the sustained April slowdown pattern.",
+    "expected_confidences": ["high", "medium"],
+    "z_score": 7.35,
+    "baseline_value": 3.0,
+    "observed_value": 23.0,
+    "limitation_notes": "Expected evidence URLs not pre-identified. Window adjacent to the Apr 6-12 case already in the golden set — agent should find consistent root cause."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_04_16",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-16",
+    "window_end": "2025-04-22",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Continued PR slowdown (26h median vs 3.5h baseline, z=4.66) during the sustained April restructuring period. Review complexity remained elevated as langchain-community migration work continued.",
+    "expected_confidences": ["medium", "high"],
+    "z_score": 4.66,
+    "baseline_value": 3.5,
+    "observed_value": 26.1,
+    "limitation_notes": "Expected evidence URLs not pre-identified. Part of the multi-week April slowdown pattern in langchain."
+  },
+  {
+    "id": "langchain_pr_slowdown_2025_04_21",
+    "repo": "langchain-ai/langchain",
+    "anomaly_type": "pr_slowdown",
+    "metric_name": "pr_median_merge_hours",
+    "window_start": "2025-04-21",
+    "window_end": "2025-04-27",
+    "expected_evidence_urls": [],
+    "accepted_explanation": "Strong PR slowdown peak (53h median vs 3.8h baseline, z=9.19) in the week just before the well-documented Apr 24–30 window. Represents the peak of the langchain-community restructuring impact on merge time.",
+    "expected_confidences": ["high", "medium"],
+    "z_score": 9.19,
+    "baseline_value": 3.8,
+    "observed_value": 52.7,
+    "limitation_notes": "Expected evidence URLs not pre-identified. Adjacent to and overlapping with the existing langchain_pr_slowdown_2025_04_30 case — consistent root cause expected."
   }
 ]

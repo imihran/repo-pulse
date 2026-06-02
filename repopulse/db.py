@@ -4,10 +4,14 @@ Reads credentials from environment variables (populated by python-dotenv from .e
 """
 
 import os
+from pathlib import Path
+
 import psycopg
 from dotenv import load_dotenv
 
-load_dotenv()  # no-op if env vars are already set (e.g., in CI)
+# Use an absolute path so this works regardless of working directory
+# (e.g. when called from an Airflow task vs. the project root CLI).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 def get_connection() -> psycopg.Connection:

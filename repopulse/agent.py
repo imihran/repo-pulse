@@ -29,6 +29,8 @@ import time
 from datetime import date
 from typing import Annotated, Literal
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -45,10 +47,10 @@ from pydantic import model_validator
 from repopulse.db import get_connection
 from repopulse.observability import get_langfuse_handler, is_enabled as langfuse_enabled
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 LLM_MODEL      = "gpt-4o-mini"   # swap to gpt-4o for higher quality; both fit the $0.25 budget
-MAX_TOOL_CALLS = 6
+MAX_TOOL_CALLS = 8
 TIMEOUT_SECS   = 90
 
 
@@ -58,7 +60,13 @@ TIMEOUT_SECS   = 90
 
 class Citation(BaseModel):
     citation_type: Literal["sql_result", "artifact_chunk", "release_note"]
-    source_url:    str   = Field(description="GitHub URL or 'SQL: <description>'")
+    source_url:    str   = Field(
+        description=(
+            "For a specific PR or issue (even if found via SQL): use its GitHub URL "
+            "https://github.com/{owner}/{repo}/pull/{number} or .../issues/{number}. "
+            "For aggregate SQL results with no single artifact: use 'SQL: <description>'."
+        )
+    )
     excerpt:       str   = Field(description="The specific value or passage cited")
 
 class InvestigationReport(BaseModel):
@@ -141,10 +149,36 @@ def run_sql(query: str) -> str:
     github_artifacts:
       id INT, repo_name TEXT, type TEXT, number INT,
       title TEXT, body TEXT, state TEXT, author_login TEXT,
-      created_at TIMESTAMPTZ, closed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ,   -- actual PR creation date from GitHub API
+      closed_at TIMESTAMPTZ,    -- actual close/merge date from GitHub API
       labels JSONB, url TEXT
+      -- KEY: created_at/closed_at come from the GitHub API, so they cover
+      -- PRs opened before our GH Archive event window. Use this table
+      -- (not the events self-join) to find slow PRs by age.
 
     repos: id INT, name TEXT
+
+    CITATION RULE: When results include a specific PR or issue number, cite it
+    using the GitHub URL https://github.com/{repo}/pull/{number} — not as a
+    SQL description. Aggregate stats with no single artifact → 'SQL: <description>'.
+
+    FOR PR SLOWDOWN anomalies — use github_artifacts to find the specific outlier
+    PRs that inflated the median (it has GitHub API timestamps so it works even
+    for PRs opened before our events window):
+
+        SELECT number,
+               title,
+               ROUND(EXTRACT(EPOCH FROM (closed_at - created_at)) / 3600) AS hours_open,
+               created_at::date AS opened,
+               closed_at::date  AS closed
+        FROM github_artifacts
+        WHERE repo_name = '<repo>'
+          AND type = 'pull_request'
+          AND closed_at::date BETWEEN '<window_start>' AND '<window_end>'
+        ORDER BY hours_open DESC NULLS LAST
+        LIMIT 10
+
+    Cite each PR from that result as https://github.com/<repo>/pull/<number>.
     """
     # Safety: only allow SELECT / WITH ... SELECT (no writes, no DDL).
     # Also block semicolons — `SELECT 1; DROP TABLE events` starts with SELECT
@@ -180,7 +214,11 @@ def run_sql(query: str) -> str:
 @tool
 def semantic_search(query: str, repo: str, k: int = 5) -> str:
     """
-    Search artifact chunks (PR/issue text) by semantic similarity.
+    Hybrid search (vector + BM25) over artifact chunks (PR/issue text).
+    Combines cosine-similarity vector search with PostgreSQL full-text search,
+    fused with Reciprocal Rank Fusion (RRF). Vector catches semantic matches;
+    BM25 catches exact keywords (PR numbers, error names, library names).
+
     Use this for: understanding WHY something happened — themes, developer
     sentiment, what contributors were discussing during the anomaly window.
 
@@ -192,7 +230,8 @@ def semantic_search(query: str, repo: str, k: int = 5) -> str:
         repo:  'owner/repo', e.g. 'langchain-ai/langchain'
         k:     number of chunks to return (default 5, max 10)
     """
-    k = min(k, 10)  # cap to stay within the 20-chunk budget
+    k        = min(k, 10)
+    search_k = k * 4   # over-fetch before RRF re-ranking
 
     oai_client = OpenAI()
     embedding  = oai_client.embeddings.create(
@@ -204,23 +243,133 @@ def semantic_search(query: str, repo: str, k: int = 5) -> str:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT artifact_url,
-                       LEFT(text, 400)                            AS excerpt,
-                       1 - (embedding <=> %s::vector)             AS similarity
-                FROM artifact_chunks
-                WHERE repo_name = %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s
+                -- Hybrid RRF: vector search + BM25 (PostgreSQL FTS), one result per artifact.
+                --
+                -- DISTINCT ON picks the best chunk per artifact before ranking so a single
+                -- long PR with many chunks doesn't crowd out other artifacts.
+                -- RRF score = 1/(60+rank_vector) + 1/(60+rank_bm25); missing leg = 0.
+                WITH vector_search AS (
+                    SELECT DISTINCT ON (artifact_url)
+                           artifact_url,
+                           LEFT(text, 400)                          AS excerpt,
+                           embedding <=> %(embedding)s::vector      AS dist
+                    FROM artifact_chunks
+                    WHERE repo_name = %(repo)s
+                    ORDER BY artifact_url,
+                             embedding <=> %(embedding)s::vector
+                ),
+                vector_ranked AS (
+                    SELECT artifact_url, excerpt,
+                           ROW_NUMBER() OVER (ORDER BY dist) AS rank
+                    FROM vector_search
+                    ORDER BY dist
+                    LIMIT %(search_k)s
+                ),
+                bm25_search AS (
+                    SELECT DISTINCT ON (artifact_url)
+                           artifact_url,
+                           LEFT(text, 400)                          AS excerpt,
+                           ts_rank(
+                               to_tsvector('english', text),
+                               websearch_to_tsquery('english', %(query)s)
+                           )                                        AS score
+                    FROM artifact_chunks
+                    WHERE repo_name = %(repo)s
+                      AND to_tsvector('english', text)
+                          @@ websearch_to_tsquery('english', %(query)s)
+                    ORDER BY artifact_url,
+                             ts_rank(
+                                 to_tsvector('english', text),
+                                 websearch_to_tsquery('english', %(query)s)
+                             ) DESC
+                ),
+                bm25_ranked AS (
+                    SELECT artifact_url, excerpt,
+                           ROW_NUMBER() OVER (ORDER BY score DESC) AS rank
+                    FROM bm25_search
+                    ORDER BY score DESC
+                    LIMIT %(search_k)s
+                ),
+                rrf AS (
+                    SELECT
+                        COALESCE(v.artifact_url, b.artifact_url)   AS artifact_url,
+                        COALESCE(v.excerpt, b.excerpt)             AS excerpt,
+                        COALESCE(1.0 / (60.0 + v.rank), 0.0) +
+                        COALESCE(1.0 / (60.0 + b.rank), 0.0)      AS rrf_score
+                    FROM vector_ranked v
+                    FULL OUTER JOIN bm25_ranked b USING (artifact_url)
+                )
+                SELECT artifact_url, excerpt, rrf_score
+                FROM rrf
+                ORDER BY rrf_score DESC
+                LIMIT %(k)s
                 """,
-                (str(embedding), repo, str(embedding), k),
+                {
+                    "embedding": str(embedding),
+                    "repo":      repo,
+                    "query":     query,
+                    "search_k":  search_k,
+                    "k":         k,
+                },
             )
             rows = cur.fetchall()
+
         if not rows:
             return f"No artifact chunks found for {repo}. Run the enricher first."
         results = []
-        for url, excerpt, sim in rows:
-            results.append(f"[sim={sim:.3f}] {url}\n{excerpt}")
+        for url, excerpt, score in rows:
+            results.append(f"[score={score:.4f}] {url}\n{excerpt}")
         return "\n\n---\n\n".join(results)
+    finally:
+        conn.close()
+
+
+@tool
+def find_slow_prs(repo: str, window_start: str, window_end: str, limit: int = 10) -> str:
+    """
+    Find the specific PRs that were slowest to merge during the anomaly window.
+    Uses github_artifacts (GitHub API timestamps) so it works even for PRs opened
+    before the GH Archive event window.
+
+    Use this for pr_slowdown anomalies to identify the outlier PRs that drove
+    the median merge time up. Cite each result as its GitHub URL.
+
+    Args:
+        repo:         'owner/repo', e.g. 'langchain-ai/langchain'
+        window_start: 'YYYY-MM-DD'
+        window_end:   'YYYY-MM-DD'
+        limit:        number of PRs to return (default 10)
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT number,
+                       LEFT(title, 80)                                      AS title,
+                       ROUND(EXTRACT(EPOCH FROM (closed_at - created_at))
+                             / 3600)                                        AS hours_open,
+                       created_at::date                                     AS opened,
+                       closed_at::date                                      AS closed
+                FROM github_artifacts
+                WHERE repo_name = %s
+                  AND type = 'pull_request'
+                  AND closed_at::date BETWEEN %s AND %s
+                ORDER BY hours_open DESC NULLS LAST
+                LIMIT %s
+                """,
+                (repo, window_start, window_end, limit),
+            )
+            rows = cur.fetchall()
+        if not rows:
+            return f"No PRs found in github_artifacts for {repo} closed between {window_start} and {window_end}."
+        lines = [f"Slowest PRs closed in {window_start} → {window_end} for {repo}:"]
+        owner_repo = repo
+        for number, title, hours, opened, closed in rows:
+            url = f"https://github.com/{owner_repo}/pull/{number}"
+            lines.append(f"  PR #{number} ({hours:.0f}h open, {opened} → {closed}): {title}")
+            lines.append(f"    URL: {url}")
+        return "\n".join(lines)
     finally:
         conn.close()
 
@@ -265,7 +414,7 @@ def get_release_notes(repo: str, since: str) -> str:
 
 # ── Graph nodes ────────────────────────────────────────────────────────────────
 
-TOOLS      = [run_sql, semantic_search, get_release_notes]
+TOOLS      = [run_sql, semantic_search, get_release_notes, find_slow_prs]
 TOOL_NODE  = ToolNode(TOOLS)
 
 def build_llm() -> ChatOpenAI:
@@ -308,12 +457,13 @@ def should_continue(state: AgentState) -> str:
       3. Timeout elapsed (> TIMEOUT_SECS seconds since start)
     """
     last_msg = state["messages"][-1]
-    has_tool_call = bool(getattr(last_msg, "tool_calls", []))
+    pending_calls = getattr(last_msg, "tool_calls", [])
 
-    if not has_tool_call:
+    if not pending_calls:
         return "end"
 
-    if state["tool_calls_used"] >= MAX_TOOL_CALLS:
+    # Count pending calls so batch tool-calls can't silently exceed the budget
+    if state["tool_calls_used"] + len(pending_calls) > MAX_TOOL_CALLS:
         return "end"   # budget exhausted — conclude with what we have
 
     elapsed = time.time() - state["start_time"]
@@ -373,22 +523,44 @@ def generate_report(messages: list, anomaly_context: str) -> InvestigationReport
     """
     Take the full conversation (including all tool outputs) and ask the LLM
     to produce a validated InvestigationReport in one structured call.
+    Retries once with a stronger citation prompt if the first attempt produces
+    evidence bullets with zero citations (the cited-only guardrail rejects that).
     """
+    from pydantic import ValidationError
+
     messages   = sanitize_messages(messages)
     llm        = ChatOpenAI(model=LLM_MODEL, temperature=0)
     structured = llm.with_structured_output(InvestigationReport)
 
-    synthesis_prompt = (
+    base_prompt = (
         "You have just completed an investigation of the following anomaly:\n\n"
         f"{anomaly_context}\n\n"
         "Based on the evidence you gathered above, produce a final investigation report.\n"
         "Every claim in 'evidence' must have a corresponding citation.\n"
+        "CITATION RULE: For any specific PR or issue number found in SQL results, "
+        "cite its GitHub URL (https://github.com/{owner}/{repo}/pull/{number}) — "
+        "not a SQL description string. Only use 'SQL: ...' for aggregate statistics "
+        "that have no single artifact URL.\n"
         "If you could not find strong evidence, reflect that in confidence=low "
         "and explain the gap in limitations."
     )
 
-    report_messages = messages + [HumanMessage(content=synthesis_prompt)]
-    return structured.invoke(report_messages)
+    retry_suffix = (
+        "\n\nCRITICAL: Your previous attempt had evidence bullets but zero citations. "
+        "You MUST include at least one citation. "
+        "If SQL results showed numbers, cite them as 'SQL: <description>'. "
+        "If semantic search found artifact chunks, cite each relevant one by its URL. "
+        "An empty citations list is not acceptable when evidence is present."
+    )
+
+    for attempt in range(2):
+        prompt = base_prompt + (retry_suffix if attempt > 0 else "")
+        try:
+            return structured.invoke(messages + [HumanMessage(content=prompt)])
+        except ValidationError:
+            if attempt == 0:
+                continue   # retry with stronger citation instruction
+            raise           # give up after second attempt
 
 
 # ── Database helpers ───────────────────────────────────────────────────────────
@@ -486,27 +658,36 @@ ANOMALY TO INVESTIGATE:
 {anomaly_context}
 
 TOOLS AND ROUTING RULE:
-- run_sql        → use for NUMBERS and TRENDS (counts, averages, time series)
-- semantic_search → use for WHY and WHAT PEOPLE SAID (themes, discussion, intent)
-- get_release_notes → use to check if a release coincides with the anomaly
-
-Routing rule in one sentence: if you need to count or measure, use SQL;
-if you need to understand, use semantic search.
+- run_sql          → counts, averages, time series (NUMBERS and TRENDS)
+- find_slow_prs    → for pr_slowdown: finds the specific outlier PRs by merge time
+- semantic_search  → developer discussions explaining WHY (themes, intent)
+- get_release_notes → check if a release coincides with the anomaly
 
 INVESTIGATION STRATEGY:
-1. Start with SQL to confirm the anomaly in the data and understand its shape
-2. Use semantic search to find developer discussions that explain WHY
-3. Check release notes if a major version change seems relevant
-4. Stop when you have enough evidence for a confident root-cause hypothesis
+1. run_sql — confirm the anomaly metrics (baseline vs observed)
+2. find_slow_prs — for pr_slowdown anomalies: call this to get the specific PRs
+   that drove the median up. Each result includes the GitHub URL — cite them.
+3. semantic_search (REQUIRED) — search for WHY those PRs were slow.
+   Use themes from the PR titles/numbers you found, e.g. "community restructuring"
+   or the specific PR number. This finds developer discussions about root causes.
+4. Cite specific PRs by their GitHub URL (https://github.com/{{repo}}/pull/{{number}}).
 
-BUDGET: you have at most {MAX_TOOL_CALLS} tool calls. Plan before you call."""
+BUDGET: you have at most {MAX_TOOL_CALLS} tool calls. Call find_slow_prs and
+semantic_search before concluding."""
 
     graph      = build_graph()
     start_time = time.time()
 
     initial_state: AgentState = {
         "messages":        [SystemMessage(content=system_prompt),
-                            HumanMessage(content="Begin your investigation.")],
+                            HumanMessage(content=(
+                                "Begin your investigation. Follow this sequence:\n"
+                                "1. run_sql — confirm the anomaly metrics\n"
+                                "2. find_slow_prs — get the specific outlier PRs "
+                                "(for pr_slowdown anomalies; skip for other types)\n"
+                                "3. semantic_search — find developer discussions explaining WHY\n"
+                                "4. Synthesize. Cite each PR by its GitHub URL."
+                            ))],
         "tool_calls_used": 0,
         "start_time":      start_time,
     }

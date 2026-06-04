@@ -40,7 +40,7 @@
         </div>
         <div class="stat-divider"></div>
         <div class="stat">
-          <span class="stat-value">Mar – Apr 2025</span>
+          <span class="stat-value" id="stat-window">—</span>
           <span class="stat-label">data window</span>
         </div>
         <div class="stat-divider"></div>
@@ -210,6 +210,12 @@ async function init() {
   const repos = [...new Set(reports.map(r => r.repo))];
   document.getElementById('stat-reports').textContent = reports.length;
   document.getElementById('stat-repos').textContent   = repos.length;
+
+  const dates = reports.map(r => r.window_start).filter(Boolean).sort();
+  if (dates.length) {
+    const fmt = iso => new Date(iso).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    document.getElementById('stat-window').textContent = `${fmt(dates[0])} – ${fmt(dates[dates.length - 1])}`;
+  }
 
   // Populate repo filter
   const repoSel = document.getElementById('filter-repo');

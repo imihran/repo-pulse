@@ -89,7 +89,8 @@ def download_range(start: date, end: date) -> int:
         key  = manifest_key(dt, hour)
         dest = raw_path(dt, hour)
 
-        if manifest.get(key, {}).get("downloaded") and dest.exists():
+        entry = manifest.get(key, {})
+        if entry.get("ingested") or (entry.get("downloaded") and dest.exists()):
             print(f"  skip  {key}")
             continue
 

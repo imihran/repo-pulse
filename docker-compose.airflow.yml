@@ -1,0 +1,37 @@
+services:
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    image: repopulse-airflow:latest
+    command: standalone
+    restart: unless-stopped
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@main-postgres-dm:5432/airflow
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/repopulse/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: repopulse-airflow-secret
+      PYTHONPATH: /opt/repopulse
+      # RepoPulse DB — overrides .env so container uses internal network address
+      POSTGRES_HOST: main-postgres-dm
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: repopulse
+      POSTGRES_PASSWORD: repopulse
+      POSTGRES_DB: main
+    env_file:
+      - .env          # brings in OPENAI_API_KEY, GITHUB_TOKEN, LANGFUSE_* etc.
+    volumes:
+      - .:/opt/repopulse          # full project: dags/, repopulse/, data/, .env
+      - airflow-logs:/opt/airflow/logs
+    ports:
+      - "8080:8080"
+    networks:
+      - marketpulse_default
+
+volumes:
+  airflow-logs:
+
+networks:
+  marketpulse_default:
+    external: true
